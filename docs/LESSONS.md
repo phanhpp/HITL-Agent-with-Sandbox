@@ -304,24 +304,22 @@ in view is swallowed and the user can never answer it. The same reasoning applie
 anything anchored to a turn — tool cards, subagent cards, a "stopped" marker: derive its
 position from the message it describes, never from "latest".
 
-**A cancelled turn can poison the next one.** `action: "interrupt"` keeps the run's
-writes, and that includes the human message that started the run. Stop before the model
-replies and the thread is left holding an unanswered question — then the next turn hands
-the model `[human, human]` and it answers the *orphan*, not the new message. Reproduced
-end to end: ask "h3 indexing in 300 words", stop before any reply, send "hey", and the
-agent explains H3.
-
-Choose the action per case rather than fixing one:
+**A cancelled turn can poison the next one — so roll it back.** `action: "interrupt"`
+keeps the run's writes, and that includes the human message that started the run. Stop
+before the model replies and the thread is left holding an unanswered question — then the
+next turn hands the model `[human, human]` and it answers the *orphan*, not the new
+message. Reproduced end to end: ask "h3 indexing in 300 words", stop before any reply,
+send "hey", and the agent explains H3.
 
 ```ts
-const last = stream.messages.at(-1);
-const hasPartialReply = last && AIMessage.isInstance(last) && last.text.trim().length > 0;
-await client.runs.cancel(threadId, runId, true, hasPartialReply ? "interrupt" : "rollback");
+await client.runs.cancel(threadId, runId, /* wait */ true, "rollback");
 ```
 
-`rollback` discards the run's writes, so the orphan disappears — verified: the thread
-goes to zero messages and the next question gets its own answer. But it would also throw
-away a half-written reply, which is usually worth keeping. Hence the split.
+`rollback` discards the run's writes, so the thread returns to how it was before you
+asked — verified: zero messages after the cancel, and the next question gets its own
+answer. It also discards a half-written reply, which is the deliberate trade: a partial
+answer is worth less than a thread that stays coherent, and "stop" reading as "undo this
+turn" is the simpler contract to explain.
 
 More generally: a partial write that survives a cancel is not neutral. Ask what the next
 turn will read, not just what the screen shows.

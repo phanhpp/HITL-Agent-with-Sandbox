@@ -2,7 +2,6 @@
 
 import { useCallback, useState } from "react";
 import type { AnyStream } from "@langchain/react";
-import { AIMessage } from "langchain";
 
 /**
  * Actually stop the agent.
@@ -29,21 +28,21 @@ import { AIMessage } from "langchain";
  *
  * `wait: true` means we do not report "stopped" before the server has acted.
  *
- * The cancel ACTION is chosen per case, because the wrong one causes a real bug:
+ * `action: "rollback"` — stop means undo the turn.
  *
- *   "interrupt" keeps the run's writes — including the human message that started it.
- *   If the model had not replied yet, that leaves an orphaned question in the thread,
- *   and the NEXT turn answers the orphan instead of the new message. Reproduced: ask
- *   "h3 indexing in 300 words", stop before any reply, send "hey" — and the agent
- *   explains H3, because the model is handed [human, human] and picks the substantive
- *   one.
+ * The alternative, "interrupt", keeps the run's writes, INCLUDING the human message that
+ * started the run. Stop before the model replies and that leaves an orphaned question in
+ * the thread, and the next turn answers the orphan instead of the new message.
+ * Reproduced: ask "h3 indexing in 300 words", stop before any reply, send "hey" — and
+ * the agent explains H3, because the model is handed [human, human] and picks the
+ * substantive one.
  *
- *   "rollback" discards the run's writes, so the orphan disappears and the thread is
- *   clean. But it would also throw away a half-written reply.
+ * Rollback discards the run's writes, so the thread goes back to how it was before you
+ * asked. It also discards a half-written reply, which is the deliberate trade: a partial
+ * answer is worth less than a thread that stays coherent.
  *
- * So: rollback when nothing was produced, interrupt when there is a partial reply worth
- * keeping. Neither can remove a reply from a run that already finished — there is
- * nothing left to cancel by then.
+ * Neither action can remove a reply from a run that already FINISHED — there is nothing
+ * left to cancel by then.
  */
 export function useStopRun(stream: AnyStream, threadId: string | null) {
   const [isStopping, setIsStopping] = useState(false);
@@ -55,18 +54,7 @@ export function useStopRun(stream: AnyStream, threadId: string | null) {
       const runs = await stream.client.runs.list(threadId, { limit: 10 });
       const active = runs.find((r) => r.status === "pending" || r.status === "running");
       if (active) {
-        // Is there already a reply worth keeping? Read the client's view: the last
-        // message being an AI message with text means the model produced something.
-        const last = stream.messages.at(-1);
-        const hasPartialReply =
-          last !== undefined && AIMessage.isInstance(last) && last.text.trim().length > 0;
-
-        await stream.client.runs.cancel(
-          threadId,
-          active.run_id,
-          true,
-          hasPartialReply ? "interrupt" : "rollback",
-        );
+        await stream.client.runs.cancel(threadId, active.run_id, true, "rollback");
       }
     } catch {
       // Already finished, or the run vanished. Detaching below is still correct.

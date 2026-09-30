@@ -160,9 +160,10 @@ export function ApproveChat({ threadId, onThreadId, onLeave }: ChatShellRenderPr
           <MessageRow
             stream={stream}
             message={message}
-            // A human message with no AI message after it, while nothing is running,
-            // means that turn was stopped or failed. Without saying so the thread just
-            // shows a gap, and the next answer looks like it landed out of order.
+            // A human message with no AI message after it, while nothing is running.
+            // Stopping no longer produces this (the cancel rolls the whole turn back),
+            // so it now only catches a run that errored or timed out — but without the
+            // label the thread just shows a gap and the next answer looks misplaced.
             unanswered={
               HumanMessage.isInstance(message) &&
               !isLoading &&
@@ -235,7 +236,7 @@ function MessageRow({
         </HumanBubble>
         {unanswered && (
           <div className="flex items-center justify-end gap-2 mt-1 text-xs text-text-tertiary">
-            <span>No reply — the agent was stopped</span>
+            <span>No reply from the agent</span>
             {forkFrom && (
               <button
                 type="button"
