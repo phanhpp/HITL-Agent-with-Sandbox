@@ -69,9 +69,14 @@ client while the agent kept generating.*
 | Click **Run again** on the stopped question instead | It is resubmitted and answered normally |
 | Dismiss it, then reload | The stopped question is gone — it was never in graph state |
 
-The stopped question is rendered client-side only. It is visible to you and invisible to
-the model, which is what stops it being read as an unanswered turn. The
-`No reply from the agent` marker therefore only appears if a run errors or times out.
+The stopped question is rendered client-side only: visible to you, invisible to the
+model, which is what stops it being read as an unanswered turn. **Run again** resubmits
+the captured text as a new message — it does not fork, because after a rollback there is
+nothing in state to fork from.
+
+**Start a New conversation before testing this.** A thread polluted by a pre-fix stop
+keeps its orphaned question forever, and `localStorage` will keep you on that thread
+across reloads, so you will keep seeing old damage and think the fix failed.
 
 Verify server-side that a cancel actually goes out — the bug was silent:
 

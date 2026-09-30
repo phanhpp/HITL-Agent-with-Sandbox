@@ -162,16 +162,6 @@ export function ApproveChat({ threadId, onThreadId, onLeave }: ChatShellRenderPr
           <MessageRow
             stream={stream}
             message={message}
-            // A human message with no AI message after it, while nothing is running.
-            // Stopping no longer produces this (the cancel rolls the whole turn back),
-            // so it now only catches a run that errored or timed out — but without the
-            // label the thread just shows a gap and the next answer looks misplaced.
-            unanswered={
-              HumanMessage.isInstance(message) &&
-              !isLoading &&
-              !pending &&
-              !AIMessage.isInstance(messages[index + 1])
-            }
             // The checkpoint holding exactly `index` messages is the state just
             // before this one existed, so resuming from it replays this turn.
             forkFrom={forkPointForMessage(checkpoints, index)}
@@ -227,12 +217,10 @@ function MessageRow({
   stream,
   message,
   forkFrom,
-  unanswered = false,
 }: {
   stream: AnyStream;
   message: BaseMessage;
   forkFrom: string | undefined;
-  unanswered?: boolean;
 }) {
   const optimisticStatus = useMessageMetadata(stream, message.id)?.optimisticStatus;
   const fork = useFork(stream);
@@ -270,20 +258,6 @@ function MessageRow({
         <HumanBubble>
           <Markdown>{message.text}</Markdown>
         </HumanBubble>
-        {unanswered && (
-          <div className="flex items-center justify-end gap-2 mt-1 text-xs text-text-tertiary">
-            <span>No reply from the agent</span>
-            {forkFrom && (
-              <button
-                type="button"
-                onClick={() => fork.regenerate(forkFrom)}
-                className="text-primary hover:underline"
-              >
-                Run again
-              </button>
-            )}
-          </div>
-        )}
         <ForkControls
           align="right"
           canEdit
