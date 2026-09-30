@@ -17,7 +17,7 @@ import { ApprovalCard } from "@/components/ApprovalCard";
 import { ToolCallCard } from "@/components/ToolCallCard";
 import { ForkControls, MessageEditor, useFork } from "@/components/ForkControls";
 import { forkPointForMessage, useCheckpoints } from "@/lib/use-checkpoints";
-import { STOPPED_MARKER, useStopRun } from "@/lib/use-stop-run";
+import { useStopRun } from "@/lib/use-stop-run";
 import { StopIcon } from "@/components/icons";
 import {
   AIBubble,
@@ -245,19 +245,6 @@ function MessageRow({
 
   if (AIMessage.isInstance(message)) {
     const text = message.text;
-
-    // The marker written by useStopRun to close a stopped turn. It is a real message —
-    // the model must see the turn as complete — but it is not a reply, so it should not
-    // look like one.
-    if (text.trim() === STOPPED_MARKER) {
-      return (
-        <div className="flex items-center gap-2 pl-9 text-xs text-text-tertiary">
-          <span className="h-px flex-1 bg-border" />
-          <span>stopped</span>
-          <span className="h-px flex-1 bg-border" />
-        </div>
-      );
-    }
 
     if (!text && toolCalls.length === 0) return null;
     return (
