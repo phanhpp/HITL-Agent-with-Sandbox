@@ -70,10 +70,15 @@ export default function ChatShell({
           <p className="text-sm text-text-secondary">
             You left the conversation. It kept running on the server.
           </p>
+          {/*
+            text-white, not text-text: in light mode --color-text and
+            --color-primary-dark are both #030710, so text-text on this background is
+            invisible. Matches how ApprovalCard styles its primary button.
+          */}
           <button
             type="button"
             onClick={() => setConnected(true)}
-            className="px-4 py-2 rounded-md bg-primary-dark text-text border border-border hover:border-border-hover transition-colors"
+            className="inline-flex items-center rounded-lg bg-primary-dark px-4 py-2 text-sm font-medium text-white hover:opacity-90 transition-opacity"
           >
             Rejoin
           </button>

@@ -15,6 +15,8 @@ import { useHitl } from "@/lib/use-hitl";
 import type { ChatShellRenderProps } from "@/components/ChatShell";
 import { ApprovalCard } from "@/components/ApprovalCard";
 import { ToolCallCard } from "@/components/ToolCallCard";
+import { ForkControls, MessageEditor, useFork, useForkFrom } from "@/components/ForkControls";
+import { StopIcon } from "@/components/icons";
 import {
   AIBubble,
   ChatContainer,
@@ -68,8 +70,8 @@ export function ApproveChat({ threadId, onThreadId, onLeave }: ChatShellRenderPr
                 : "Ask the agent to do something sensitive..."
             }
           />
-          <div className="flex items-center gap-3">
-            {/* disconnect() detaches without cancelling; stop() cancels the run
+          <div className="flex items-center gap-2">
+            {/* disconnect() detaches and lets the run continue; stop() cancels it
                 server-side. Keeping them distinct is GUIDE.md 12's mistake 4. */}
             <button
               type="button"
@@ -77,18 +79,28 @@ export function ApproveChat({ threadId, onThreadId, onLeave }: ChatShellRenderPr
                 await stream.disconnect();
                 onLeave();
               }}
-              className="text-xs text-text-secondary hover:text-text transition-colors"
+              className="rounded-md border border-border px-2.5 py-1 text-xs text-text-secondary hover:text-text hover:border-border-hover transition-colors"
             >
-              Leave (keeps running)
+              Leave
             </button>
-            <button
-              type="button"
-              onClick={() => void stream.stop()}
-              disabled={!isLoading}
-              className="text-xs text-text-secondary hover:text-text disabled:opacity-40 transition-colors"
-            >
-              Stop (cancels)
-            </button>
+
+            {/*
+              Only while the agent is actually working. isLoading goes false at every
+              terminal phase, an interrupt included — and while an approval is pending
+              there is no run to cancel anyway, so Reject on the card is the action that
+              applies there.
+            */}
+            {isLoading && (
+              <button
+                type="button"
+                onClick={() => void stream.stop()}
+                aria-label="Stop generating"
+                title="Stop the agent working on this thread"
+                className="inline-flex size-7 items-center justify-center rounded-full border border-error/50 text-error hover:border-error hover:bg-error/10 transition-colors"
+              >
+                <StopIcon className="size-3" />
+              </button>
+            )}
           </div>
         </div>
       }
@@ -125,6 +137,13 @@ export function ApproveChat({ threadId, onThreadId, onLeave }: ChatShellRenderPr
 /** Separate component so useMessageMetadata can run per message — hooks cannot go in a map. */
 function MessageRow({ stream, message }: { stream: AnyStream; message: BaseMessage }) {
   const optimisticStatus = useMessageMetadata(stream, message.id)?.optimisticStatus;
+  const forkFrom = useForkFrom(stream, message.id);
+  const fork = useFork(stream);
+  const [isEditing, setIsEditing] = useState(false);
+
+  // No fork point, or a run in flight: editing now would race it (GUIDE.md 12's
+  // mistake 12 — do not let users edit or regenerate while streaming).
+  const forkDisabled = !forkFrom || stream.isLoading;
 
   // stream.toolCalls is flat for the whole thread, so pick this message's out. Keyed by
   // callId: a call mutates status in place, and an index key reuses the wrong card.
@@ -136,11 +155,30 @@ function MessageRow({ stream, message }: { stream: AnyStream; message: BaseMessa
   }, [stream.toolCalls, message]);
 
   if (HumanMessage.isInstance(message)) {
+    if (isEditing && forkFrom) {
+      return (
+        <MessageEditor
+          initialText={message.text}
+          onCancel={() => setIsEditing(false)}
+          onSave={(text) => {
+            setIsEditing(false);
+            fork.editAndRerun(forkFrom, text);
+          }}
+        />
+      );
+    }
+
     return (
-      <div style={{ opacity: optimisticStatus === "pending" ? 0.6 : 1 }}>
+      <div className="group" style={{ opacity: optimisticStatus === "pending" ? 0.6 : 1 }}>
         <HumanBubble>
           <Markdown>{message.text}</Markdown>
         </HumanBubble>
+        <ForkControls
+          align="right"
+          canEdit
+          disabled={forkDisabled}
+          onEdit={() => setIsEditing(true)}
+        />
         {optimisticStatus === "failed" && (
           <div className="flex justify-end mt-1">
             <button
@@ -160,11 +198,18 @@ function MessageRow({ stream, message }: { stream: AnyStream; message: BaseMessa
     const text = message.text;
     if (!text && toolCalls.length === 0) return null;
     return (
-      <div className="space-y-2">
+      <div className="group space-y-2">
         {text && (
           <AIBubble>
             <Markdown>{text}</Markdown>
           </AIBubble>
+        )}
+        {text && (
+          <ForkControls
+            canEdit={false}
+            disabled={forkDisabled}
+            onRegenerate={() => forkFrom && fork.regenerate(forkFrom)}
+          />
         )}
         {toolCalls.length > 0 && (
           <div className="pl-9 max-w-[80%] space-y-2">
