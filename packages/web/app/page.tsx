@@ -8,18 +8,6 @@ const PAGES = [
     blurb: "The agent proposes sending an email and stops. You approve, edit, or reject it.",
     shows: ["interrupt / resume", "tool-call cards", "optimistic retry"],
   },
-  {
-    href: "/orchestrate",
-    title: "Orchestrate",
-    blurb: "A coordinator writes a plan, delegates to subagents, and works in a sandbox.",
-    shows: ["live todo list", "nested subagent cards", "sandbox files + diffs"],
-  },
-  {
-    href: "/rewind",
-    title: "Rewind",
-    blurb: "Edit an earlier message to fork the conversation, or resume from any saved step.",
-    shows: ["branching", "checkpoint time travel", "leave and rejoin"],
-  },
 ];
 
 export default function Home() {

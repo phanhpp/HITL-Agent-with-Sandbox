@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import {
   useMessageMetadata,
   useStream,
@@ -37,7 +37,7 @@ const PRESETS = [
  * GUIDE.md 8.3's RejoinableChat for /approve. Owns useStream; torn down and rebuilt on
  * Leave/Rejoin, always handed the same threadId by ChatShell so it reconnects.
  */
-export function ApproveChat({ threadId, onThreadId, onLeave }: ChatShellRenderProps) {
+export function ApproveChat({ threadId, onThreadId, onLeave, reconnect }: ChatShellRenderProps) {
   // Reads window, so compute lazily rather than at module scope.
   const [apiUrl] = useState(resolveAgentUrl);
 
@@ -100,6 +100,23 @@ export function ApproveChat({ threadId, onThreadId, onLeave }: ChatShellRenderPr
     void stream.submit({ messages: [new HumanMessage(text)] });
   };
 
+  /*
+   * A fork starts a new branch, and the server thread then holds only that branch. The
+   * client does not know this: it keeps the messages it already streamed, so the
+   * replaced reply lingers below the new one. There is no public re-hydrate, so rebuild
+   * the chat once the forked run finishes and let it read the thread fresh.
+   *
+   * Waiting for isLoading to fall matters — remounting mid-stream would drop the run
+   * we just started.
+   */
+  const [forkPending, setForkPending] = useState(false);
+  useEffect(() => {
+    if (forkPending && !isLoading) {
+      setForkPending(false);
+      reconnect();
+    }
+  }, [forkPending, isLoading, reconnect]);
+
   return (
     <ChatContainer
       embedded
@@ -138,7 +155,14 @@ export function ApproveChat({ threadId, onThreadId, onLeave }: ChatShellRenderPr
             {isLoading && (
               <button
                 type="button"
-                onClick={() => void stopRun()}
+                onClick={async () => {
+                  await stopRun();
+                  // Re-read the thread. After a cancel the client still holds whatever
+                  // it streamed, and an optimistic message whose run never persisted
+                  // lingers as "Failed to send" even though the user stopped it on
+                  // purpose. Rebuilding makes the view match the server.
+                  reconnect();
+                }}
                 disabled={isStopping}
                 aria-label="Stop generating"
                 title={isStopping ? "Stopping…" : "Stop the agent working on this thread"}
@@ -163,6 +187,7 @@ export function ApproveChat({ threadId, onThreadId, onLeave }: ChatShellRenderPr
             // The checkpoint holding exactly `index` messages is the state just
             // before this one existed, so resuming from it replays this turn.
             forkFrom={forkPointForMessage(checkpoints, index)}
+            onFork={() => setForkPending(true)}
           />
           {index === pendingIndex && approvalCards}
         </Fragment>
@@ -181,10 +206,13 @@ function MessageRow({
   stream,
   message,
   forkFrom,
+  onFork,
 }: {
   stream: AnyStream;
   message: BaseMessage;
   forkFrom: string | undefined;
+  /** Tells the page a branch was started, so it can rebuild once the run ends. */
+  onFork: () => void;
 }) {
   const optimisticStatus = useMessageMetadata(stream, message.id)?.optimisticStatus;
   const fork = useFork(stream);
@@ -211,6 +239,7 @@ function MessageRow({
           onCancel={() => setIsEditing(false)}
           onSave={(text) => {
             setIsEditing(false);
+            onFork();
             fork.editAndRerun(forkFrom, text);
           }}
         />
@@ -258,7 +287,11 @@ function MessageRow({
           <ForkControls
             canEdit={false}
             disabled={forkDisabled}
-            onRegenerate={() => forkFrom && fork.regenerate(forkFrom)}
+            onRegenerate={() => {
+              if (!forkFrom) return;
+              onFork();
+              fork.regenerate(forkFrom);
+            }}
           />
         )}
         {toolCalls.length > 0 && (

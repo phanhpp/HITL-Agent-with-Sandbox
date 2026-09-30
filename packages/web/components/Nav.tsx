@@ -3,11 +3,9 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-const LINKS = [
-  { href: "/approve", label: "Approve" },
-  { href: "/orchestrate", label: "Orchestrate" },
-  { href: "/rewind", label: "Rewind" },
-];
+// /rewind was dropped from the plan — rewind and rejoin are capabilities every page
+// has, not a page of their own. /orchestrate is not built yet, so it is not linked.
+const LINKS = [{ href: "/approve", label: "Approve" }];
 
 export function Nav() {
   const pathname = usePathname();

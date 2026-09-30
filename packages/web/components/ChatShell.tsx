@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useState, type ReactNode } from "react";
 
 /**
  * GUIDE.md 8.3's ChatShell, shared by every page.
@@ -21,6 +21,16 @@ import { useCallback, useState, type ReactNode } from "react";
  * Nothing loops: a click changes state, React re-renders, and it waits again.
  */
 export interface ChatShellRenderProps {
+  /**
+   * Rebuild the chat so useStream re-reads the thread from the server.
+   *
+   * There is no public way to make the hook re-hydrate, so changing a key and letting
+   * React throw the instance away is the only lever (GUIDE.md 8.3.5). Needed after any
+   * operation where server state diverges from what the client streamed — a fork leaves
+   * the old branch's messages in the client's list even though the thread now holds
+   * only the new branch. Call it once the run has finished, never mid-stream.
+   */
+  reconnect: () => void;
   /** null on a first visit; useStream then creates a thread on the first submit. */
   threadId: string | null;
   /** Pass straight to useStream's onThreadId. useStream calls it itself. */
@@ -47,12 +57,19 @@ export default function ChatShell({
   });
 
   const [connected, setConnected] = useState(true);
+  const [mountKey, setMountKey] = useState(0);
+  const reconnect = useCallback(() => setMountKey((k) => k + 1), []);
 
   // Updates React state and localStorage together. Used both to save a real id and
   // to clear it (id === null), which is why the else branch exists.
   const persist = useCallback(
     (id: string | null) => {
       setThreadId(id);
+      // Starting a new conversation must also rebuild the chat, or it keeps rendering
+      // the previous thread's messages. A real id does NOT rebuild: threadId goes
+      // null -> id on the first submit, and remounting then would destroy the run in
+      // flight along with everything it had streamed.
+      if (id === null) setMountKey((k) => k + 1);
       try {
         if (id) localStorage.setItem(storageKey, id);
         else localStorage.removeItem(storageKey);
@@ -103,11 +120,19 @@ export default function ChatShell({
         </button>
       </div>
 
-      {renderChat({
-        threadId,
-        onThreadId: persist,
-        onLeave: () => setConnected(false),
-      })}
+      {/*
+        Keyed ONLY on the remount counter, never on threadId. useStream assigns a real
+        id on the first submit, so keying on the thread would rebuild the chat mid-run
+        and throw away the stream — the reply lands on the server and never appears.
+      */}
+      <Fragment key={mountKey}>
+        {renderChat({
+          threadId,
+          onThreadId: persist,
+          onLeave: () => setConnected(false),
+          reconnect,
+        })}
+      </Fragment>
     </div>
   );
 }
