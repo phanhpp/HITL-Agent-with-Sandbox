@@ -1,0 +1,22 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+
+# Node
+node_modules/
+.next/
+dist/
+
+# Secrets
+.env
+.env.local
+.env.*.local
+
+# LangGraph dev server state (in-memory threads, checkpoints)
+packages/agent/.langgraph_api/
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/

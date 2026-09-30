@@ -1,0 +1,151 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap");
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: var(
+    --font-body,
+    "Lausanne",
+    "Inter",
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif
+  );
+  background-color: var(--color-surface);
+  color: var(--color-text);
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-family: var(
+    --font-heading,
+    "Lausanne",
+    "Inter",
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif
+  );
+  font-weight: 700;
+}
+
+code,
+pre {
+  font-family: var(--font-mono);
+}
+
+code {
+  font-size: 0.875em;
+}
+
+/*
+ * Marked/DOMPurify output (Vue, Svelte, Angular) has bare <pre><code> with no classes.
+ * In React, `Markdown.tsx` sets the same behavior on `<pre>` via Tailwind:
+ * `overflow-x-auto rounded-md bg-primary-dark/5 p-2 text-xs` — the important bit for
+ * layout is `overflow-x-auto` (plus width constraints below). These rules mirror that
+ * for HTML-rendered markdown so fenced blocks stay inside chat bubbles.
+ */
+.markdown-content {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.markdown-content pre {
+  overflow-x: auto;
+  max-width: 100%;
+  box-sizing: border-box;
+  margin: 0.4em 0;
+  padding: 0.5rem;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  border-radius: var(--radius-sm);
+  background-color: color-mix(in srgb, var(--color-primary-dark) 5%, transparent);
+}
+
+.markdown-content code {
+  border-radius: 0.25rem;
+  background-color: color-mix(in srgb, var(--color-primary-dark) 8%, transparent);
+  padding: 0.125rem 0.25rem;
+  font-size: 0.75rem;
+}
+
+.markdown-content pre code {
+  display: block;
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+::selection {
+  background-color: color-mix(in srgb, var(--color-primary) 40%, transparent);
+  color: var(--color-text);
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.25);
+}
+
+@utility scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+@utility text-balance {
+  text-wrap: balance;
+}
+
+@keyframes slide-in-left {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+.animate-slide-in-left {
+  animation: slide-in-left 0.2s ease-out;
+}
+
+@keyframes slide-in-right {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+.animate-slide-in-right {
+  animation: slide-in-right 0.2s ease-out;
+}

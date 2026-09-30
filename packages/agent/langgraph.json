@@ -1,0 +1,10 @@
+{
+  "python_version": "3.12",
+  "graphs": {
+    "human_in_the_loop": "./agents/human_in_the_loop.py:agent"
+  },
+  "env": ".env",
+  "dependencies": [
+    "."
+  ]
+}

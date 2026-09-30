@@ -1,0 +1,6 @@
+# Python 3.11+ required (langgraph-cli[inmem] / langgraph dev).
+langchain
+langgraph
+langchain-anthropic
+langgraph-cli[inmem]
+langgraph-api>=0.9.0
