@@ -191,25 +191,17 @@ event: values          ← lines mentioning checkpoint_id: 0
 - `useStream` can only fill `parentCheckpointId` when a message arrives paired with a checkpoint. No pairing on the wire → undefined for every message.
 - Symptom: Edit and Retry permanently disabled, nothing in the console.
 
-**Use the `#msgs` column instead.** The checkpoint where the thread had exactly `i` messages is the state just *before* message `i` — so that is what you fork from to replay it.
+**Use the `#msgs` column instead.** To Edit or Retry **message #3**:
 
-```ts
-const states = await client.threads.getHistory(threadId, { limit: 100 });
-const checkpoints = [...states].reverse();          // API returns newest first
+1. Find the checkpoint where the thread had exactly **2** messages (`id_002`). That is the state just *before* message #3 was created.
+2. Pass `forkFrom: "id_002"` to `submit`.
+3. The server rewinds to `id_002` and re-runs the LLM from there.
 
-// The checkpoint holding exactly `i` messages is the state just BEFORE message `i`,
-// so resuming from it replays that turn. Last match wins: several checkpoints can
-// share a count within one step.
-function forkPointForMessage(checkpoints, i) {
-  let id;
-  for (const cp of checkpoints) {
-    if ((cp.values?.messages?.length ?? 0) === i) id = cp.checkpoint?.checkpoint_id ?? id;
-  }
-  return id;
-}
-```
+Two things that trip this up:
 
-- Fetch it **once per thread**, in an effect keyed on `[threadId, stream.isLoading, stream.client]` — `isLoading` in the deps means it refreshes when a run *ends*, not on every streamed token.
+- **Off by one.** Message **#3** is array index **2**, and you want the checkpoint with **2** messages. Count from the array index, not the human-readable position.
+- **Last match wins.** Several checkpoints can share a message count within one step. Take the newest of them — the closest point before the next message is written.
+- Fetch history **once per thread**, in an effect keyed on `[threadId, stream.isLoading, stream.client]`. `isLoading` in the deps refreshes it when a run *ends*, not on every streamed token.
 
 **A fork branches, it does not delete.**
 - `submit(input, { forkFrom })` moves the thread to a new branch.
