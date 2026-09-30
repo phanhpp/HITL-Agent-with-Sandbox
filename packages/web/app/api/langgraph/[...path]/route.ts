@@ -1,40 +1,43 @@
 import type { NextRequest } from "next/server";
 
-/**
- * Proxy between the browser and the LangGraph agent server.
- *
- * Why this exists rather than a next.config rewrite: in production the upstream
- * is a LangSmith Deployment that requires an `X-Api-Key` header. A rewrite cannot
- * add one, and putting the key in the browser would expose it. So every agent
- * request goes through here, the key is attached server-side, and the browser only
- * ever talks to its own origin (which also sidesteps CORS).
- *
- * This is the production equivalent of the Vite dev proxy in
- * packages/frontend/vite.config.ts, including stripping the /api/langgraph prefix.
- */
+// Proxy between the browser and the LangGraph agent server.
+// A next.config rewrite cannot add the X-Api-Key a hosted agent needs, which is why
+// this is a route handler. Full reasoning in docs/BUILD.md section 2.
 
-// Node, not edge: we stream an upstream body straight through and want no
-// header or body-size constraints beyond the platform's.
+// ============================================================================
+// SERVER CONFIGURATION (TOP OF FILE)
+// ============================================================================
+
+// Uses full Node.js environment (required for streaming fetch & duplex support).
 export const runtime = "nodejs";
 
-// Never cache or statically analyse this route — every request is a live call.
+// Disables static caching so every AI call is live and unique.
 export const dynamic = "force-dynamic";
 
-// Agent turns take minutes. Vercel with fluid compute allows 300s on Hobby
-// (which is also its maximum) and up to 800s on Pro.
+// Allows long-running AI agent turns to execute for up to 5 minutes before timing out.
 export const maxDuration = 300;
 
-/**
- * Request headers worth forwarding. Everything else is dropped: `host` would
- * point at our own origin, and `cookie` must not leak to the agent server.
- * `last-event-id` matters — it is how an SSE client resumes a dropped stream.
- */
+// ============================================================================
+// HEADER ALLOWLISTS (SANITIZATION)
+// ============================================================================
+
+// Headers copied over from the browser. Unlisted headers (like 'host' and 'cookie')
+// are dropped so browser metadata doesn't confuse the Python server or leak sessions.
 const FORWARDED_REQUEST_HEADERS = ["content-type", "accept", "last-event-id"];
 
-/** Response headers worth returning. `content-type` carries text/event-stream. */
+// Response headers returned to the browser to ensure event streams (SSE) are typed correctly.
 const FORWARDED_RESPONSE_HEADERS = ["content-type", "content-disposition", "etag"];
 
+// ============================================================================
+// THE 5 EXECUTION STEPS INSIDE PROXY()
+// ============================================================================
+
 async function proxy(req: NextRequest, ctx: RouteContext<"/api/langgraph/[...path]">) {
+  // --------------------------------------------------------------------------
+  // STEP 1: Validate the Target Server URL
+  // --------------------------------------------------------------------------
+  // Reads AGENT_SERVER_URL from .env. If missing, stops immediately and returns
+  // a clear 500 error instead of failing opaquely later.
   const base = process.env.AGENT_SERVER_URL;
   if (!base) {
     return Response.json(
@@ -43,40 +46,52 @@ async function proxy(req: NextRequest, ctx: RouteContext<"/api/langgraph/[...pat
     );
   }
 
-  // In Next 16 params is a promise.
+  // --------------------------------------------------------------------------
+  // STEP 2: Rebuild the Destination URL
+  // --------------------------------------------------------------------------
+  // Extracts [...path] segments (e.g., ["threads", "abc", "state"]), joins them
+  // with slashes, and appends query strings. This strips the '/api/langgraph' prefix:
+  // /api/langgraph/threads/abc/state?limit=10 -> http://127.0.0.1:2024/threads/abc/state?limit=10
   const { path } = await ctx.params;
   const search = req.nextUrl.search;
   const upstreamUrl = `${base.replace(/\/$/, "")}/${(path ?? []).join("/")}${search}`;
 
+  // --------------------------------------------------------------------------
+  // STEP 3: Sanitize Headers & Inject Security Credentials
+  // --------------------------------------------------------------------------
   const headers = new Headers();
   for (const name of FORWARDED_REQUEST_HEADERS) {
     const value = req.headers.get(name);
     if (value) headers.set(name, value);
   }
 
-  // Only set when present, so `langgraph dev` — which needs no auth — works locally
-  // with this same file and an unset key.
+  // Inject secret API key on the server side (never exposed to client browser).
+  // Kept inside an 'if' check so local `langgraph dev` works without needing a key.
   const apiKey = process.env.LANGSMITH_API_KEY;
   if (apiKey) headers.set("X-Api-Key", apiKey);
 
+  // Check if the incoming request carries a payload body.
   const hasBody = req.method !== "GET" && req.method !== "HEAD";
 
+  // --------------------------------------------------------------------------
+  // STEP 4: Execute the Upstream Call
+  // --------------------------------------------------------------------------
+  // Makes the request to the upstream Python server with key safeguards.
   let upstream: Response;
   try {
     upstream = await fetch(upstreamUrl, {
       method: req.method,
       headers,
       body: hasBody ? req.body : undefined,
-      // Required when body is a stream: we start sending before the response
-      // arrives. Not in the fetch types yet, hence the cast.
+      // duplex: "half" allows Node.js to stream live request payload chunks to the Python server
       ...(hasBody ? { duplex: "half" } : {}),
-      redirect: "manual",
-      cache: "no-store",
+      redirect: "manual", // Don't silently follow redirects
+      cache: "no-store", // Ensure we always fetch live data from the agent
+      // Aborts the backend Python task if the user closes their tab/cancels
       signal: req.signal,
     } as RequestInit);
   } catch (error) {
-    // Most often: the agent server is not running. Say so plainly instead of
-    // surfacing an opaque fetch failure to the stream client.
+    // Returns a clear 502 error if the target Python agent server is offline
     return Response.json(
       {
         error: "Could not reach the agent server.",
@@ -87,18 +102,23 @@ async function proxy(req: NextRequest, ctx: RouteContext<"/api/langgraph/[...pat
     );
   }
 
+  // --------------------------------------------------------------------------
+  // STEP 5: Pipe the Response Stream Back
+  // --------------------------------------------------------------------------
   const responseHeaders = new Headers();
   for (const name of FORWARDED_RESPONSE_HEADERS) {
     const value = upstream.headers.get(name);
     if (value) responseHeaders.set(name, value);
   }
-  // Keep SSE flowing: no-transform stops intermediaries rewriting the body, and
-  // x-accel-buffering disables nginx-style buffering that would batch up events.
+
+  // Anti-buffering directives:
+  // - x-accel-buffering: "no" tells Nginx reverse proxies NOT to batch data
+  // - cache-control: "no-transform" stops CDNs from altering or delaying the stream
   responseHeaders.set("cache-control", "no-cache, no-transform");
   responseHeaders.set("x-accel-buffering", "no");
 
-  // Pass the body through as a stream rather than awaiting it, so tokens reach
-  // the browser as they are produced.
+  // Returns upstream.body directly without awaiting it. Text tokens stream
+  // live to the UI as they are produced instead of arriving all at once.
   return new Response(upstream.body, {
     status: upstream.status,
     statusText: upstream.statusText,
@@ -106,6 +126,12 @@ async function proxy(req: NextRequest, ctx: RouteContext<"/api/langgraph/[...pat
   });
 }
 
+// ============================================================================
+// METHOD EXPORTS (BOTTOM OF FILE)
+// ============================================================================
+
+// Next.js App Router requires exporting functions named after specific HTTP verbs.
+// Pointing all six to proxy() ensures full compatibility with the LangGraph SDK.
 export const GET = proxy;
 export const POST = proxy;
 export const PUT = proxy;

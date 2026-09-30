@@ -88,7 +88,7 @@ Pick a rewrite when you only need forwarding. Anything conditional needs a handl
 So the key lives in `process.env` on the server and never enters the browser bundle:
 
 ```ts
-// route.ts:59-60
+// route.ts:70-71
 const apiKey = process.env.LANGSMITH_API_KEY;
 if (apiKey) headers.set("X-Api-Key", apiKey);   // only when set
 ```
@@ -106,7 +106,7 @@ array:
 | `/api/langgraph/threads/abc/state` | `["threads","abc","state"]` | `$AGENT_SERVER_URL/threads/abc/state` |
 
 ```ts
-// route.ts:47-49
+// route.ts:55-57
 const { path } = await ctx.params;              // a Promise in Next 15+
 const upstreamUrl = `${base}/${path.join("/")}${req.nextUrl.search}`;
 ```
@@ -129,7 +129,7 @@ The SDK's default transport asks for that; LangGraph produces it. The proxy's on
 is **not to break it** — and creating a new `Response` is exactly where it could:
 
 ```ts
-// route.ts:97-98, 102
+// route.ts:117-118, 122
 responseHeaders.set("cache-control", "no-cache, no-transform");
 responseHeaders.set("x-accel-buffering", "no"); // stop nginx-style batching
 return new Response(upstream.body, { … });      // pass the stream, do not await it
@@ -141,7 +141,7 @@ a dropped stream can resume.
 ### The method exports are the registration
 
 ```ts
-// route.ts:109-114
+// route.ts:135-140
 export const GET = proxy;
 export const POST = proxy;
 // PUT, PATCH, DELETE, OPTIONS …
