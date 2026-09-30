@@ -15,7 +15,8 @@ import { useHitl } from "@/lib/use-hitl";
 import type { ChatShellRenderProps } from "@/components/ChatShell";
 import { ApprovalCard } from "@/components/ApprovalCard";
 import { ToolCallCard } from "@/components/ToolCallCard";
-import { ForkControls, MessageEditor, useFork, useForkFrom } from "@/components/ForkControls";
+import { ForkControls, MessageEditor, useFork } from "@/components/ForkControls";
+import { forkPointForMessage, useCheckpoints } from "@/lib/use-checkpoints";
 import { StopIcon } from "@/components/icons";
 import {
   AIBubble,
@@ -48,6 +49,11 @@ export function ApproveChat({ threadId, onThreadId, onLeave }: ChatShellRenderPr
 
   const { messages, isLoading } = stream;
   const hitl = useHitl(stream);
+
+  // One history fetch per thread, refreshed when a run ends. Each message's fork
+  // point is derived from this rather than from per-message metadata, which is
+  // undefined here — see lib/use-checkpoints.ts.
+  const checkpoints = useCheckpoints(stream, threadId);
   const pending = hitl.requests.length > 0;
   const hasMessages = messages.length > 0;
 
@@ -109,8 +115,15 @@ export function ApproveChat({ threadId, onThreadId, onLeave }: ChatShellRenderPr
 
       {/* Only stream.messages: useStream adds the submitted message optimistically,
           so rendering it ourselves too would show it twice. */}
-      {messages.map((message) => (
-        <MessageRow key={message.id} stream={stream} message={message} />
+      {messages.map((message, index) => (
+        <MessageRow
+          key={message.id}
+          stream={stream}
+          message={message}
+          // The checkpoint holding exactly `index` messages is the state just
+          // before this one existed, so resuming from it replays this turn.
+          forkFrom={forkPointForMessage(checkpoints, index)}
+        />
       ))}
 
       {isLoading && !pending && <TypingIndicator />}
@@ -135,9 +148,16 @@ export function ApproveChat({ threadId, onThreadId, onLeave }: ChatShellRenderPr
 }
 
 /** Separate component so useMessageMetadata can run per message — hooks cannot go in a map. */
-function MessageRow({ stream, message }: { stream: AnyStream; message: BaseMessage }) {
+function MessageRow({
+  stream,
+  message,
+  forkFrom,
+}: {
+  stream: AnyStream;
+  message: BaseMessage;
+  forkFrom: string | undefined;
+}) {
   const optimisticStatus = useMessageMetadata(stream, message.id)?.optimisticStatus;
-  const forkFrom = useForkFrom(stream, message.id);
   const fork = useFork(stream);
   const [isEditing, setIsEditing] = useState(false);
 

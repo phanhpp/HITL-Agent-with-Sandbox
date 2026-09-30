@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useMessageMetadata, type AnyStream } from "@langchain/react";
+import type { AnyStream } from "@langchain/react";
 import { HumanMessage, type BaseMessage } from "langchain";
 import { PencilIcon, RefreshIcon } from "./icons";
 
@@ -16,10 +16,17 @@ import { PencilIcon, RefreshIcon } from "./icons";
  * GUIDE.md:2413 flags that the docs disagree, and the types win.
  */
 
-/** The checkpoint to fork from, or undefined if this message cannot be forked. */
-export function useForkFrom(stream: AnyStream, messageId: string | undefined) {
-  return useMessageMetadata(stream, messageId)?.parentCheckpointId;
-}
+/*
+ * There is deliberately no useForkFrom() here.
+ *
+ * The obvious source is `useMessageMetadata(stream, id)?.parentCheckpointId`, which is
+ * what GUIDE.md 8.1 uses — but it is documented as undefined "when the message was
+ * observed without a paired checkpoint envelope", and in this setup it is undefined for
+ * every message, reload or not. Gating these buttons on it disabled them permanently.
+ *
+ * Fork points come from `lib/use-checkpoints.ts` instead, which reads
+ * threads.getHistory(). Callers pass `forkFrom` down as a prop.
+ */
 
 /**
  * Hover controls for one message.
