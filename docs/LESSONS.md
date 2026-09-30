@@ -212,6 +212,50 @@ arriving after you pressed Stop is expected, not a bug. `action: "rollback"` dis
 the run's writes instead, but `StreamStopOptions` only exposes `cancel?: boolean`, so
 reaching it means calling `stream.client.runs.cancel(...)` directly with the run id.
 
+**`stream.stop()` may not cancel anything — verify it does.** On the protocol transport
+(`POST /commands` + `/stream/events`) the SDK's stop is:
+
+```js
+// langgraph-sdk/dist/stream/controller.js:911
+if (options?.cancel ?? true) {
+  const runId = this.#activeRunId;                       // undefined on this transport
+  if (threadId != null && runId != null) try {
+    await client.runs.cancel(threadId, runId);
+  } catch {}                                             // failures are swallowed
+}
+await this.#submitter.stop();                             // only this actually runs
+```
+
+`#activeRunId` is set by an internal `notifyCreated` that does not fire here, so the
+guard fails, **no cancel request is sent**, and `stop()` silently degrades to
+`disconnect()`: the browser detaches while the agent keeps generating. The symptom is
+exactly "the typing indicator disappears but the full reply still arrives".
+
+Diagnose it by looking at the server log rather than the client — clicking Stop
+produced zero `/runs/{id}/cancel` requests, which is what pinned it down:
+
+```bash
+grep -i cancel agent-dev.log
+```
+
+Work around it by finding the run yourself:
+
+```ts
+const runs = await stream.client.runs.list(threadId, { limit: 10 });
+const active = runs.find((r) => r.status === "pending" || r.status === "running");
+if (active) await stream.client.runs.cancel(threadId, active.run_id, true, "interrupt");
+await stream.stop({ cancel: false });   // then just detach
+```
+
+`wait: true` means you do not report "stopped" before the server has acted.
+
+**Cancel cannot undo a run that already finished.** Tested both actions against a
+completed run: `interrupt` and `rollback` both leave the reply in the thread, because
+there is nothing left to cancel. `rollback` only discards the writes of a run still in
+progress. So on a page where replies take two seconds, Stop is almost never useful —
+by the time the button is clickable the message is committed. It earns its place where
+runs last minutes.
+
 **Four controls that are easy to conflate.** Name them by what they do to the thread:
 
 | Control | Effect |

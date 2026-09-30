@@ -17,6 +17,7 @@ import { ApprovalCard } from "@/components/ApprovalCard";
 import { ToolCallCard } from "@/components/ToolCallCard";
 import { ForkControls, MessageEditor, useFork } from "@/components/ForkControls";
 import { forkPointForMessage, useCheckpoints } from "@/lib/use-checkpoints";
+import { useStopRun } from "@/lib/use-stop-run";
 import { StopIcon } from "@/components/icons";
 import {
   AIBubble,
@@ -54,6 +55,7 @@ export function ApproveChat({ threadId, onThreadId, onLeave }: ChatShellRenderPr
   // point is derived from this rather than from per-message metadata, which is
   // undefined here — see lib/use-checkpoints.ts.
   const checkpoints = useCheckpoints(stream, threadId);
+  const { stopRun, isStopping } = useStopRun(stream, threadId);
   const pending = hitl.requests.length > 0;
   const hasMessages = messages.length > 0;
 
@@ -99,12 +101,13 @@ export function ApproveChat({ threadId, onThreadId, onLeave }: ChatShellRenderPr
             {isLoading && (
               <button
                 type="button"
-                onClick={() => void stream.stop()}
+                onClick={() => void stopRun()}
+                disabled={isStopping}
                 aria-label="Stop generating"
-                title="Stop the agent working on this thread"
-                className="inline-flex size-7 items-center justify-center rounded-full border border-error/50 text-error hover:border-error hover:bg-error/10 transition-colors"
+                title={isStopping ? "Stopping…" : "Stop the agent working on this thread"}
+                className="inline-flex size-7 items-center justify-center rounded-full border border-error/50 text-error hover:border-error hover:bg-error/10 disabled:opacity-50 transition-colors"
               >
-                <StopIcon className="size-3" />
+                <StopIcon className={`size-3 ${isStopping ? "animate-pulse" : ""}`} />
               </button>
             )}
           </div>
