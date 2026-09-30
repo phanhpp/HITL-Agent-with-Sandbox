@@ -161,13 +161,37 @@ if (last?.type === "human") {
 }
 ```
 
-### Branching
+### Branching (Edit and Retry)
 
-**Fork ids come from history, not message metadata.**
-- The guide uses `useMessageMetadata(stream, id)?.parentCheckpointId`.
-- It is documented as undefined "when the message was observed without a paired checkpoint envelope" — and here it is undefined for **every** message, reload or not.
-- Result: every Edit/Retry button silently disabled, with nothing in the console.
-- `threads.getHistory()` is authoritative and always populated.
+**What these do.** Both re-run the graph from a point in the past instead of continuing from the end.
+- **Edit** — change your message, re-run from just before it.
+- **Retry** — re-run the same turn unchanged.
+- Both need one thing: the id of the checkpoint to restart from.
+
+**`getHistory()` is the thread's timeline.** One entry per graph step, each with the full state at that moment:
+
+```
+checkpoint_id     #msgs  next step
+…eff1fa1fe0a4         4  done
+…b72b3f01fe21         4  HumanInTheLoopMiddleware.after_model
+…f3238d77dc57         3  model
+…365493e02c1d         2  __start__
+…260a0fc879f5         0  __start__      ← oldest
+```
+
+**`parentCheckpointId` is undefined — and it is NOT a missing checkpointer.**
+- Checkpoints exist: `getHistory()` returns 8 of them for the thread above.
+- But the stream never says which checkpoint each message belongs to. Every event during a run:
+
+```
+event: metadata
+event: values          ← lines mentioning checkpoint_id: 0
+```
+
+- `useStream` can only fill `parentCheckpointId` when a message arrives paired with a checkpoint. No pairing on the wire → undefined for every message.
+- Symptom: Edit and Retry permanently disabled, nothing in the console.
+
+**Use the `#msgs` column instead.** The checkpoint where the thread had exactly `i` messages is the state just *before* message `i` — so that is what you fork from to replay it.
 
 ```ts
 const states = await client.threads.getHistory(threadId, { limit: 100 });
