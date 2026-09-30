@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import {
   useMessageMetadata,
   useStream,
@@ -58,6 +58,43 @@ export function ApproveChat({ threadId, onThreadId, onLeave }: ChatShellRenderPr
   const { stopRun, isStopping } = useStopRun(stream, threadId);
   const pending = hitl.requests.length > 0;
   const hasMessages = messages.length > 0;
+
+  /*
+   * Which message the approval card belongs under.
+   *
+   * It used to render in a block after the whole list, which put it at the bottom of
+   * the thread. That looks right only while the reviewed turn is the last one — after
+   * a fork, or once another query is sent, the card detaches from the tool call it is
+   * actually reviewing. Match on the tool name instead and render it in place.
+   */
+  const pendingIndex = useMemo(() => {
+    if (hitl.requests.length === 0) return -1;
+    const names = new Set(hitl.requests.map((r) => r.name));
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (AIMessage.isInstance(m) && (m.tool_calls ?? []).some((tc) => names.has(tc.name))) {
+        return i;
+      }
+    }
+    return -1;
+  }, [hitl.requests, messages]);
+
+  const approvalCards =
+    pending && !hitl.isProcessing ? (
+      <div className="pl-9 max-w-[80%] space-y-3">
+        {hitl.requests.map((actionRequest, idx) => (
+          <ApprovalCard
+            key={`${actionRequest.name}-${idx}`}
+            actionRequest={actionRequest}
+            reviewConfig={hitl.reviewConfigs[idx]}
+            onApprove={hitl.approve}
+            onReject={(reason) => hitl.reject(idx, reason)}
+            onEdit={(editedArgs) => hitl.edit(idx, editedArgs)}
+            isProcessing={hitl.isProcessing}
+          />
+        ))}
+      </div>
+    ) : null;
 
   const submit = (text: string) => {
     void stream.submit({ messages: [new HumanMessage(text)] });
@@ -119,33 +156,31 @@ export function ApproveChat({ threadId, onThreadId, onLeave }: ChatShellRenderPr
       {/* Only stream.messages: useStream adds the submitted message optimistically,
           so rendering it ourselves too would show it twice. */}
       {messages.map((message, index) => (
-        <MessageRow
-          key={message.id}
-          stream={stream}
-          message={message}
-          // The checkpoint holding exactly `index` messages is the state just
-          // before this one existed, so resuming from it replays this turn.
-          forkFrom={forkPointForMessage(checkpoints, index)}
-        />
+        <Fragment key={message.id}>
+          <MessageRow
+            stream={stream}
+            message={message}
+            // A human message with no AI message after it, while nothing is running,
+            // means that turn was stopped or failed. Without saying so the thread just
+            // shows a gap, and the next answer looks like it landed out of order.
+            unanswered={
+              HumanMessage.isInstance(message) &&
+              !isLoading &&
+              !pending &&
+              !AIMessage.isInstance(messages[index + 1])
+            }
+            // The checkpoint holding exactly `index` messages is the state just
+            // before this one existed, so resuming from it replays this turn.
+            forkFrom={forkPointForMessage(checkpoints, index)}
+          />
+          {index === pendingIndex && approvalCards}
+        </Fragment>
       ))}
 
       {isLoading && !pending && <TypingIndicator />}
 
-      {pending && !hitl.isProcessing && (
-        <div className="pl-9 max-w-[80%] space-y-3">
-          {hitl.requests.map((actionRequest, idx) => (
-            <ApprovalCard
-              key={`${actionRequest.name}-${idx}`}
-              actionRequest={actionRequest}
-              reviewConfig={hitl.reviewConfigs[idx]}
-              onApprove={hitl.approve}
-              onReject={(reason) => hitl.reject(idx, reason)}
-              onEdit={(editedArgs) => hitl.edit(idx, editedArgs)}
-              isProcessing={hitl.isProcessing}
-            />
-          ))}
-        </div>
-      )}
+      {/* Fallback: an interrupt whose tool call matches no message in view. */}
+      {pendingIndex === -1 && approvalCards}
     </ChatContainer>
   );
 }
@@ -155,10 +190,12 @@ function MessageRow({
   stream,
   message,
   forkFrom,
+  unanswered = false,
 }: {
   stream: AnyStream;
   message: BaseMessage;
   forkFrom: string | undefined;
+  unanswered?: boolean;
 }) {
   const optimisticStatus = useMessageMetadata(stream, message.id)?.optimisticStatus;
   const fork = useFork(stream);
@@ -196,6 +233,20 @@ function MessageRow({
         <HumanBubble>
           <Markdown>{message.text}</Markdown>
         </HumanBubble>
+        {unanswered && (
+          <div className="flex items-center justify-end gap-2 mt-1 text-xs text-text-tertiary">
+            <span>No reply — the agent was stopped</span>
+            {forkFrom && (
+              <button
+                type="button"
+                onClick={() => fork.regenerate(forkFrom)}
+                className="text-primary hover:underline"
+              >
+                Run again
+              </button>
+            )}
+          </div>
+        )}
         <ForkControls
           align="right"
           canEdit
