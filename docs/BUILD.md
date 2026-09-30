@@ -51,11 +51,36 @@ Start both: `make dev-next`.
 The browser never talks to the agent server directly. Every call goes through a Next.js
 route handler first.
 
-### Why not a rewrite
+### What a rewrite is, and why we did not use one
 
-The obvious approach is a `next.config` rewrite forwarding `/api/langgraph/*` to the
-agent. That works locally and breaks in production, because a hosted agent needs an
-`X-Api-Key` header — and **a rewrite cannot add headers**. A route handler can.
+A **rewrite** is a forwarding rule in `next.config.ts`. No code runs — Next matches the
+URL, fetches the destination, and returns the response as-is:
+
+```ts
+async rewrites() {
+  return [{ source: "/api/langgraph/:path*", destination: "http://127.0.0.1:2024/:path*" }];
+}
+```
+
+That is the whole feature. It is the direct equivalent of the Vite dev proxy, and it
+works fine locally.
+
+It breaks in production: a hosted agent needs an `X-Api-Key` header, and **a rewrite
+cannot add one** — there is nowhere to put logic.
+
+A **route handler** (`route.ts`) is a function that receives the request and returns a
+response, so it can.
+
+| | Rewrite | Route handler |
+|---|---|---|
+| Lives in | `next.config.ts` | `app/…/route.ts` |
+| Runs code | no | yes |
+| Add auth headers | **no** | yes |
+| Read `process.env` per request | no | yes |
+| Inspect or shape the response | no | yes |
+| Cost | one config line | ~100 lines |
+
+Pick a rewrite when you only need forwarding. Anything conditional needs a handler.
 
 So the key lives in `process.env` on the server and never enters the browser bundle:
 

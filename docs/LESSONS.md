@@ -21,7 +21,9 @@ next project. Most fail silently, which is why they cost time.
 - Never prefix a secret with `NEXT_PUBLIC_`.
 
 **A `next.config` rewrite cannot add headers.**
-- Need auth on the upstream? Use a route handler, not a rewrite.
+- A rewrite is a forwarding rule — `{ source, destination }` in config. No code runs.
+- Fine for plain proxying. Cannot add auth, read env per request, or shape the response.
+- Anything conditional needs a route handler (`route.ts`), which is a real function.
 
 **Route handlers (Next 15+).**
 - `params` is a Promise: `const { path } = await ctx.params`.
