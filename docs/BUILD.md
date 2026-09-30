@@ -3,6 +3,8 @@
 A walkthrough of what was built and why, in the style of `GUIDE.md`. Section numbers
 here are referenced from code comments.
 
+Code blocks carry a `// file:line` comment. Paths are relative to `packages/web/`.
+
 `GUIDE.md` teaches `@langchain/react` in the abstract. This teaches **this app**: which
 file does what, and the reasoning behind each decision. Where the two disagree, this one
 reflects what actually runs — see `docs/LESSONS.md` for why.
@@ -57,6 +59,7 @@ A **rewrite** is a forwarding rule in `next.config.ts`. No code runs — Next ma
 URL, fetches the destination, and returns the response as-is:
 
 ```ts
+// next.config.ts — NOT what this app does. Shown for contrast.
 async rewrites() {
   return [{ source: "/api/langgraph/:path*", destination: "http://127.0.0.1:2024/:path*" }];
 }
@@ -85,6 +88,7 @@ Pick a rewrite when you only need forwarding. Anything conditional needs a handl
 So the key lives in `process.env` on the server and never enters the browser bundle:
 
 ```ts
+// route.ts:59-60
 const apiKey = process.env.LANGSMITH_API_KEY;
 if (apiKey) headers.set("X-Api-Key", apiKey);   // only when set
 ```
@@ -102,6 +106,7 @@ array:
 | `/api/langgraph/threads/abc/state` | `["threads","abc","state"]` | `$AGENT_SERVER_URL/threads/abc/state` |
 
 ```ts
+// route.ts:47-49
 const { path } = await ctx.params;              // a Promise in Next 15+
 const upstreamUrl = `${base}/${path.join("/")}${req.nextUrl.search}`;
 ```
@@ -124,9 +129,10 @@ The SDK's default transport asks for that; LangGraph produces it. The proxy's on
 is **not to break it** — and creating a new `Response` is exactly where it could:
 
 ```ts
-return new Response(upstream.body, { … });      // pass the stream, do not await it
+// route.ts:97-98, 102
 responseHeaders.set("cache-control", "no-cache, no-transform");
 responseHeaders.set("x-accel-buffering", "no"); // stop nginx-style batching
+return new Response(upstream.body, { … });      // pass the stream, do not await it
 ```
 
 Plus `duplex: "half"` when forwarding a request body, and forwarding `last-event-id` so
@@ -135,6 +141,7 @@ a dropped stream can resume.
 ### The method exports are the registration
 
 ```ts
+// route.ts:109-114
 export const GET = proxy;
 export const POST = proxy;
 // PUT, PATCH, DELETE, OPTIONS …
@@ -166,6 +173,7 @@ halves matter:
 - `ApproveChat` holds `useStream` and is disposable — rebuilding it re-reads the thread.
 
 ```tsx
+// ChatShell.tsx:128 — reconnect() at :61 bumps mountKey
 <Fragment key={mountKey}>{renderChat({ threadId, onThreadId, onLeave, reconnect })}</Fragment>
 ```
 
@@ -186,6 +194,7 @@ A run continues on the server after you close the tab. Losing the thread id mean
 a conversation that still exists. So the id is stored:
 
 ```tsx
+// ChatShell.tsx:50-57
 const [threadId, setThreadId] = useState<string | null>(() => {
   try { return localStorage.getItem(storageKey); } catch { return null; }
 });
@@ -218,6 +227,7 @@ One storage key per page (`"thread:approve"`), so pages keep separate conversati
 The Python side pauses before `send_email`:
 
 ```python
+# packages/agent/agents/human_in_the_loop.py:17-24
 middleware=[HumanInTheLoopMiddleware(interrupt_on={"send_email": {...}})]
 ```
 
@@ -226,6 +236,7 @@ The frontend sees that as `stream.interrupt`, renders a card, and sends a decisi
 ### One decision per action, positionally aligned
 
 ```ts
+// use-hitl.ts:89 (approve), :96 (reject), :107 (edit)
 { decisions: requests.map(() => ({ type: "approve" })) }
 ```
 
@@ -265,6 +276,7 @@ interrupt is never unanswerable.
 `stream.toolCalls` is a flat list for the whole thread, so each message filters its own:
 
 ```ts
+// ApproveChat.tsx:228-231
 const ids = new Set((message.tool_calls ?? []).map((tc) => tc.id));
 stream.toolCalls.filter((tc) => ids.has(tc.callId));
 ```
@@ -291,6 +303,7 @@ Found by checking the **server** log — clicking Stop produced zero `/cancel` r
 So the run is found and cancelled directly:
 
 ```ts
+// use-stop-run.ts:46-50
 const runs = await client.runs.list(threadId, { limit: 10 });
 const active = runs.find((r) => r.status === "pending" || r.status === "running");
 if (active) await client.runs.cancel(threadId, active.run_id, /* wait */ true, "interrupt");
@@ -311,6 +324,7 @@ agent explains H3.
 **closed**:
 
 ```ts
+// use-stop-run.ts:55-63
 const last = (await client.threads.getState(threadId)).values?.messages?.at(-1);
 if (last?.type === "human") {
   await client.threads.updateState(threadId, {
@@ -379,6 +393,7 @@ streamed, so the replaced reply lingers. The page rebuilds the chat once the run
 finishes:
 
 ```tsx
+// ApproveChat.tsx:113-118
 useEffect(() => {
   if (forkPending && !isLoading) { setForkPending(false); reconnect(); }
 }, [forkPending, isLoading, reconnect]);
