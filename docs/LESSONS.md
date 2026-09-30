@@ -2,6 +2,9 @@
 
 Things found by hitting them. Each cost time or produced a wrong first attempt.
 
+All of these are already fixed in this repo — the point is not to rediscover them on the
+next project. Most fail silently, which is why they cost time.
+
 ---
 
 ## Next.js
@@ -197,11 +200,13 @@ event: values          ← lines mentioning checkpoint_id: 0
 2. Pass `forkFrom: "id_002"` to `submit`.
 3. The server rewinds to `id_002` and re-runs the LLM from there.
 
-Two things that trip this up:
+Three details to get right. All fail **silently** — no error, just the wrong turn re-run:
 
 - **Off by one.** Message **#3** is array index **2**, and you want the checkpoint with **2** messages. Count from the array index, not the human-readable position.
-- **Last match wins.** Several checkpoints can share a message count within one step. Take the newest of them — the closest point before the next message is written.
-- Fetch history **once per thread**, in an effect keyed on `[threadId, stream.isLoading, stream.client]`. `isLoading` in the deps refreshes it when a run *ends*, not on every streamed token.
+- **Last match wins.** Several checkpoints can share a message count within one step. Take the newest — the closest point before the next message is written. Taking the first forks a step too early.
+- **Fetch history once per thread**, in an effect keyed on `[threadId, stream.isLoading, stream.client]`. `isLoading` in the deps refreshes it when a run *ends*, not on every streamed token.
+
+Implemented in `packages/web/lib/use-checkpoints.ts`.
 
 **A fork branches, it does not delete.**
 - `submit(input, { forkFrom })` moves the thread to a new branch.
