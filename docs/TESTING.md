@@ -62,6 +62,14 @@ client while the agent kept generating.*
 | Click **Run again** | Answer appears under that message, not at the bottom |
 | Nothing running | Stop button is **absent**, not greyed |
 
+**The orphan case** — this was a real bug, check it explicitly:
+
+| Step | Expect |
+| --- | --- |
+| Ask `h3 indexing in 300 words`, stop **before any reply** | Your question disappears from the thread entirely (rollback) |
+| Then send `hey` | Agent replies to **"hey"**, not with an H3 explanation |
+| Ask something long, stop **mid-reply** | Partial reply is **kept** (interrupt), question stays |
+
 Verify server-side that a cancel actually goes out — the bug was silent:
 
 ```bash
