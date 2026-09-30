@@ -182,6 +182,99 @@ unrelated files, which also happened to be corrupt. Check
 
 ## Chat interface patterns
 
+### The one that causes most bugs
+
+**The client keeps its own message list, and nothing can force it to re-read.** Cancel,
+fork or write state directly and the server moves on while the browser keeps showing
+what it streamed. There is no public re-hydrate — the only lever is to remount the
+component that owns `useStream` (`GUIDE.md` 8.3.5):
+
+```tsx
+<Fragment key={mountKey}>{renderChat(...)}</Fragment>   // bump mountKey to rebuild
+```
+
+Call it after a stop and after a fork completes — **never mid-stream**, and **never key
+it on `threadId`**. `threadId` goes `null → id` on the first submit, so keying on it
+rebuilds the chat mid-run and throws away the stream: the reply lands on the server and
+the UI shows nothing.
+
+### Stop
+
+- **`stream.stop()` may send no cancel at all.** It only cancels when an internal
+  `#activeRunId` is set, which does not happen on the `/commands` + `/stream/events`
+  transport. It silently becomes `disconnect()`. Find the run and cancel it yourself:
+
+  ```ts
+  const runs = await client.runs.list(threadId, { limit: 10 });
+  const active = runs.find((r) => r.status === "pending" || r.status === "running");
+  if (active) await client.runs.cancel(threadId, active.run_id, /* wait */ true, "interrupt");
+  ```
+
+- **Diagnose it on the server, not the client.** `grep -i cancel agent-dev.log` — zero
+  hits meant no request was ever sent.
+- **Cancel cannot undo a finished run.** On a two-second reply Stop is a no-op, whichever
+  action you pass.
+- **A cancelled turn poisons the next one.** `interrupt` keeps the human message that
+  started the run, so the model gets `[human, human]` and answers the *older* one. Don't
+  delete it (`rollback` removes the user's own question) — **close the turn**:
+
+  ```ts
+  const last = (await client.threads.getState(threadId)).values?.messages?.at(-1);
+  if (last?.type === "human") {
+    await client.threads.updateState(threadId, {
+      values: { messages: [{ type: "ai", content: "_(stopped by the user)_" }] },
+    });
+  }
+  ```
+
+- `isLoading` means "generating right now", not "busy" — it is false during an interrupt.
+  Show Stop only while it is true.
+
+### Branching
+
+- **A fork branches, it does not delete.** `submit(input, { forkFrom })` moves the thread
+  to a new branch; the old messages stay in `getHistory()` and just stop appearing in
+  `/state`. That history is what a `< 1/2 >` branch switcher would read.
+- **Fork ids come from history, not message metadata.** `parentCheckpointId` is undefined
+  here for every message, which silently disables every fork button. Use
+  `threads.getHistory()` and match: the checkpoint holding exactly `i` messages is the
+  state just before message `i`.
+- Regenerate submits `undefined`, not `{}`.
+
+### Placement
+
+**Anchor per-turn UI to its turn, not the thread bottom.** Rendering approval cards after
+the message list looks right only while the reviewed turn is last — fork, or send another
+message, and the card detaches from the tool call it is reviewing. Match the pending
+action to its message and render it there, keeping a bottom fallback so an unmatched
+interrupt is never unanswerable. Same for tool cards and any "stopped" marker.
+
+### Reading state
+
+**`threads/search` returns a stale `values` snapshot. Use `/threads/{id}/state`.** They
+disagreed during debugging and the search result sent me the wrong way.
+
+### Testing
+
+**Drive the real UI.** A written checklist found nothing for hours. Ten minutes of browser
+automation found a regression that had already shipped: every new conversation rendered
+zero messages while the server held a full reply. Server-side `curl` proves the API; only
+the browser proves the app.
+
+## Tooling
+
+**A git repo at `$HOME` captures everything below it.** `hitl-py` had no `.git`, so
+every `git` command there was operating on `/Users/<me>/.git` — a 5.7 GB repo of
+unrelated files, which also happened to be corrupt. Check
+`git rev-parse --show-toplevel` before trusting `git status` in a new project.
+
+**macOS has no `timeout`.** Use `curl --max-time` instead.
+
+**A venv's `pip` can carry a stale shebang** pointing at wherever it was created.
+`python -m pip` always works.
+
+## Chat interface patterns
+
 Reusable decisions for any agent chat UI, with the mechanism behind each.
 
 **`isLoading` means "generating right now", not "this thread is busy".** It is driven by
