@@ -304,44 +304,43 @@ in view is swallowed and the user can never answer it. The same reasoning applie
 anything anchored to a turn — tool cards, subagent cards, a "stopped" marker: derive its
 position from the message it describes, never from "latest".
 
-**A cancelled turn can poison the next one — so roll it back.** `action: "interrupt"`
-keeps the run's writes, and that includes the human message that started the run. Stop
-before the model replies and the thread is left holding an unanswered question — then the
-next turn hands the model `[human, human]` and it answers the *orphan*, not the new
-message. Reproduced end to end: ask "h3 indexing in 300 words", stop before any reply,
-send "hey", and the agent explains H3.
+**A cancelled turn can poison the next one — close it, do not delete it.**
+`action: "interrupt"` keeps the run's writes, including the human message that started
+it. Stop before the model replies and the thread holds a dangling question — the next
+turn hands the model `[human, human]` and it answers the *dangling* one. Reproduced: ask
+"h3 indexing in 300 words", stop before any reply, send "hey", and the agent explains H3.
+
+Three fixes, in the order they were tried:
+
+| Approach | Why it failed |
+| --- | --- |
+| `action: "rollback"` | Thread stays clean, but it deletes the user's own question — reads as losing their input |
+| Rollback + re-render the question client-side only | Works in principle, but the client still holds what it streamed, so the turn renders twice; and there is no public API to force a re-hydrate, only a remount |
+| **Keep `interrupt`, then close the turn with a short assistant message** | Correct |
 
 ```ts
-await client.runs.cancel(threadId, runId, /* wait */ true, "rollback");
+await client.runs.cancel(threadId, runId, /* wait */ true, "interrupt");
+
+const state = await client.threads.getState(threadId);
+const last = (state.values as { messages?: { type?: string }[] })?.messages?.at(-1);
+if (last?.type === "human") {
+  await client.threads.updateState(threadId, {
+    values: { messages: [{ type: "ai", content: "_(stopped by the user)_" }] },
+  });
+}
 ```
 
-`rollback` discards the run's writes, so the thread returns to how it was before you
-asked — verified: zero messages after the cancel, and the next question gets its own
-answer.
+The question stays visible, a partial reply is kept, and the model sees a completed turn
+so it answers the next request. Verified end to end: human / "(stopped by the user)" /
+human "hey" / "Hey! How can I help you today?".
 
-But rollback alone removes **your question** too, which reads as losing your input. The
-two requirements are not actually in conflict: the question has to be visible **to the
-user** and invisible **to the model**. So capture it before cancelling and render it
-client-side only, outside graph state:
+Read the SERVER state to decide, not the client's — after a cancel the client still holds
+whatever it streamed before the cancel landed, so it will tell you there is a reply when
+the thread has none.
 
-```ts
-const lastHuman = [...stream.messages].reverse().find((m) => HumanMessage.isInstance(m));
-const prompt = lastHuman?.text?.trim() || null;   // capture BEFORE the cancel
-await client.runs.cancel(threadId, runId, true, "rollback");
-setStoppedPrompt(prompt);                          // display only
-```
-
-Render it dimmed with "Stopped — not sent to the agent", a **Run again** that resubmits
-it, and a dismiss. The model never receives it, so it cannot be read as an unanswered
-turn; the user still sees what they asked.
-
-The general shape: **UI state and graph state are not the same thing.** When something
-must be shown but must not influence the next model call, keep it out of the graph and
-render it locally. Reaching for graph state because it is the convenient place to put a
-message is how the orphan bug happened in the first place.
-
-More generally: a partial write that survives a cancel is not neutral. Ask what the next
-turn will read, not just what the screen shows.
+The general shape: an interrupted turn is not just missing output, it is **malformed
+input for the next call**. Ask what the next request will read, not only what the screen
+shows. Closing the gap is usually better than deleting the evidence.
 
 **A stopped turn leaves a hole, so say so.** After a successful cancel the human message
 persists with no reply after it. Render nothing and the thread silently shows a gap, and

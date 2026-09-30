@@ -60,29 +60,17 @@ client while the agent kept generating.*
 | Ask for something long ("explain h3 indexing in 400 words"), click stop mid-stream | Text **stops growing**, cut off mid-sentence |
 | Nothing running | Stop button is **absent**, not greyed |
 
-**The orphan case** — this was a real bug, check it explicitly:
+**The dangling-turn case** — this was a real bug, check it explicitly:
 
 | Step | Expect |
 | --- | --- |
-| Ask `h3 indexing in 300 words`, stop **before any reply** | Question stays visible but dimmed, labelled `Stopped — not sent to the agent`, with **Run again** and a dismiss |
+| Ask `h3 indexing in 300 words`, stop **before any reply** | Your question stays, followed by a thin `stopped` divider |
 | Then send `hey` | Agent replies to **"hey"**, not with an H3 explanation |
-| Click **Run again** on the stopped question instead | It is resubmitted and answered normally |
-| Dismiss it, then reload | The stopped question is gone — it was never in graph state |
+| Ask something long, stop **mid-reply** | Partial reply is kept; no divider (the turn already has an answer) |
+| Hover the stopped question → **Retry** | Re-runs that turn |
 
-The stopped question is rendered client-side only: visible to you, invisible to the
-model, which is what stops it being read as an unanswered turn. **Run again** resubmits
-the captured text as a new message — it does not fork, because after a rollback there is
-nothing in state to fork from.
-
-**Start a New conversation before testing this.** A thread polluted by a pre-fix stop
-keeps its orphaned question forever, and `localStorage` will keep you on that thread
-across reloads, so you will keep seeing old damage and think the fix failed.
-
-Verify server-side that a cancel actually goes out — the bug was silent:
-
-```bash
-grep -i cancel /tmp/agent-dev.log | tail -3
-```
+Stopping never deletes your question. It closes the turn with a short assistant message
+so the model reads it as complete — that marker is what the divider renders.
 
 ## 5. Branching — Edit and Retry (GUIDE.md 8.1)
 
