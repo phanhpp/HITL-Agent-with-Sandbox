@@ -29,7 +29,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       */}
       <body className="h-dvh flex flex-col overflow-hidden">
         <Nav />
-        <main className="flex-1 min-h-0">{children}</main>
+        <main className="flex-1 min-h-0 flex flex-col">{children}</main>
       </body>
     </html>
   );

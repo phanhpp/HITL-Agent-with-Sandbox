@@ -1,12 +1,20 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { useMessageMetadata, useStream, type AnyStream, type AssembledToolCall } from "@langchain/react";
+import {
+  useMessageMetadata,
+  useStream,
+  type AnyStream,
+  type AssembledToolCall,
+} from "@langchain/react";
 import { AIMessage, HumanMessage, type BaseMessage } from "langchain";
-import type { HITLRequest, HITLResponse } from "langchain";
 
 import { ASSISTANTS, resolveAgentUrl } from "@/lib/agent";
 import type { AgentState } from "@/lib/state";
+import { useHitl } from "@/lib/use-hitl";
+import type { ChatShellRenderProps } from "@/components/ChatShell";
+import { ApprovalCard } from "@/components/ApprovalCard";
+import { ToolCallCard } from "@/components/ToolCallCard";
 import {
   AIBubble,
   ChatContainer,
@@ -16,117 +24,96 @@ import {
   PresetPrompts,
   TypingIndicator,
 } from "@/components/playground";
-import { ApprovalCard } from "./ApprovalCard";
-import { ToolCallCard } from "./ToolCallCard";
 
 const PRESETS = [
   "Send an email to team@acme.com with subject 'Q4 Results' saying revenue grew 15% this quarter",
 ];
 
-export function ApproveChat() {
-  // resolveAgentUrl() reads window, so compute it lazily rather than at module
-  // scope. It is SSR-safe (returns the relative path when there is no window).
+/**
+ * GUIDE.md 8.3's RejoinableChat for /approve. Owns useStream; torn down and rebuilt on
+ * Leave/Rejoin, always handed the same threadId by ChatShell so it reconnects.
+ */
+export function ApproveChat({ threadId, onThreadId, onLeave }: ChatShellRenderProps) {
+  // Reads window, so compute lazily rather than at module scope.
   const [apiUrl] = useState(resolveAgentUrl);
-  const [threadId, setThreadId] = useState<string | null>(null);
-  const [isProcessing, setIsProcessing] = useState(false);
 
   const stream = useStream<AgentState>({
     apiUrl,
     assistantId: ASSISTANTS.approve,
     threadId,
-    onThreadId: setThreadId,
+    onThreadId,
   });
 
-  const { messages, isLoading, interrupt } = stream;
-
-  const hitlRequest = interrupt?.value as HITLRequest | undefined;
-  const actionRequests = hitlRequest?.actionRequests ?? [];
-  const reviewConfigs = hitlRequest?.reviewConfigs ?? [];
+  const { messages, isLoading } = stream;
+  const hitl = useHitl(stream);
+  const pending = hitl.requests.length > 0;
   const hasMessages = messages.length > 0;
 
   const submit = (text: string) => {
     void stream.submit({ messages: [new HumanMessage(text)] });
   };
 
-  /*
-   * One decision per action request, positionally aligned with actionRequests.
-   *
-   * The fan-out is deliberate and easy to "fix" wrongly, so: REJECT rejects every
-   * action, while EDIT approves all the others. Changing either changes what the
-   * agent does with the actions you did not click on.
-   */
-  const respond = async (build: () => HITLResponse) => {
-    if (!hitlRequest) return;
-    setIsProcessing(true);
-    try {
-      await stream.respond(build());
-    } finally {
-      setIsProcessing(false);
-    }
-  };
-
-  const handleApprove = () =>
-    respond(() => ({ decisions: actionRequests.map(() => ({ type: "approve" as const })) }));
-
-  const handleReject = (index: number, reason: string) =>
-    respond(() => ({
-      decisions: actionRequests.map((_, i) => ({
-        type: "reject" as const,
-        message:
-          i === index ? reason || "User rejected" : "Rejected along with other actions",
-      })),
-    }));
-
-  const handleEdit = (index: number, editedArgs: Record<string, unknown>) =>
-    respond(() => ({
-      decisions: actionRequests.map((_, i) =>
-        i === index
-          ? {
-              type: "edit" as const,
-              editedAction: { name: actionRequests[index].name, args: editedArgs },
-            }
-          : { type: "approve" as const },
-      ),
-    }));
-
   return (
     <ChatContainer
       embedded
       className="max-w-3xl mx-auto w-full"
       input={
-        <ChatInput
-          onSubmit={submit}
-          disabled={isLoading || isProcessing || !!interrupt}
-          placeholder={
-            interrupt
-              ? "Please approve or reject the pending action..."
-              : "Ask the agent to do something sensitive..."
-          }
-          onNewThread={hasMessages ? () => setThreadId(null) : undefined}
-        />
+        <div className="space-y-2">
+          <ChatInput
+            onSubmit={submit}
+            disabled={isLoading || hitl.isProcessing || pending}
+            placeholder={
+              pending
+                ? "Please approve or reject the pending action..."
+                : "Ask the agent to do something sensitive..."
+            }
+          />
+          <div className="flex items-center gap-3">
+            {/* disconnect() detaches without cancelling; stop() cancels the run
+                server-side. Keeping them distinct is GUIDE.md 12's mistake 4. */}
+            <button
+              type="button"
+              onClick={async () => {
+                await stream.disconnect();
+                onLeave();
+              }}
+              className="text-xs text-text-secondary hover:text-text transition-colors"
+            >
+              Leave (keeps running)
+            </button>
+            <button
+              type="button"
+              onClick={() => void stream.stop()}
+              disabled={!isLoading}
+              className="text-xs text-text-secondary hover:text-text disabled:opacity-40 transition-colors"
+            >
+              Stop (cancels)
+            </button>
+          </div>
+        </div>
       }
     >
       {!hasMessages && !isLoading && <PresetPrompts prompts={PRESETS} onSelect={submit} />}
 
-      {/* Only stream.messages is rendered — useStream adds the submitted message
-          optimistically, so adding it here too would show it twice. */}
+      {/* Only stream.messages: useStream adds the submitted message optimistically,
+          so rendering it ourselves too would show it twice. */}
       {messages.map((message) => (
         <MessageRow key={message.id} stream={stream} message={message} />
       ))}
 
-      {isLoading && !hitlRequest && <TypingIndicator />}
+      {isLoading && !pending && <TypingIndicator />}
 
-      {hitlRequest && actionRequests.length > 0 && !isProcessing && (
+      {pending && !hitl.isProcessing && (
         <div className="pl-9 max-w-[80%] space-y-3">
-          {actionRequests.map((actionRequest, idx) => (
+          {hitl.requests.map((actionRequest, idx) => (
             <ApprovalCard
               key={`${actionRequest.name}-${idx}`}
               actionRequest={actionRequest}
-              reviewConfig={reviewConfigs[idx]}
-              onApprove={handleApprove}
-              onReject={(reason) => void handleReject(idx, reason)}
-              onEdit={(editedArgs) => void handleEdit(idx, editedArgs)}
-              isProcessing={isProcessing}
+              reviewConfig={hitl.reviewConfigs[idx]}
+              onApprove={hitl.approve}
+              onReject={(reason) => hitl.reject(idx, reason)}
+              onEdit={(editedArgs) => hitl.edit(idx, editedArgs)}
+              isProcessing={hitl.isProcessing}
             />
           ))}
         </div>
@@ -135,17 +122,12 @@ export function ApproveChat() {
   );
 }
 
-/**
- * One message. Separate component because it uses useMessageMetadata, which is a
- * hook and so cannot be called inside the .map() above.
- */
+/** Separate component so useMessageMetadata can run per message — hooks cannot go in a map. */
 function MessageRow({ stream, message }: { stream: AnyStream; message: BaseMessage }) {
-  const metadata = useMessageMetadata(stream, message.id);
-  const optimisticStatus = metadata?.optimisticStatus;
+  const optimisticStatus = useMessageMetadata(stream, message.id)?.optimisticStatus;
 
-  // stream.toolCalls is a flat list for the whole thread, so pick out the ones
-  // this message requested. Cards are keyed by callId: a call mutates status in
-  // place, and keying by index would make React reuse the wrong card.
+  // stream.toolCalls is flat for the whole thread, so pick this message's out. Keyed by
+  // callId: a call mutates status in place, and an index key reuses the wrong card.
   const toolCalls = useMemo<AssembledToolCall[]>(() => {
     const ids = AIMessage.isInstance(message)
       ? new Set((message.tool_calls ?? []).map((tc) => tc.id))
@@ -195,6 +177,6 @@ function MessageRow({ stream, message }: { stream: AnyStream; message: BaseMessa
     );
   }
 
-  // Tool messages are not rendered: their content is shown inside ToolCallCard.
+  // Tool messages are not rendered: their content appears inside ToolCallCard.
   return null;
 }

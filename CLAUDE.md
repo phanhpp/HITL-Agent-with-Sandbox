@@ -37,7 +37,17 @@ If port 2024 is already taken, `langgraph dev` quietly starts on a random port, 
 
 `tools/email.py` is a stub: it sends nothing and returns fake `"status": "sent"` JSON.
 
-### Frontend details
+### packages/web (Next.js)
+
+The app under active development. Run it with `make dev-next` (agent :2024 + Next :4200).
+
+- `app/api/langgraph/[...path]/route.ts` proxies every agent call and injects `X-Api-Key` from `AGENT_SERVER_URL`/`LANGSMITH_API_KEY`. A `next.config` rewrite cannot add headers, which is why this is a route handler. The key is only set when present, so `langgraph dev` works locally with no key.
+- **Height chain.** `body` is `h-dvh flex flex-col`, `main` is `flex-1 min-h-0 flex flex-col`, and pages pass `embedded` to `ChatContainer`. `main` must stay a flex container: `flex-1` means nothing to a child of a block element, and the symptom is silent — the chat grows past the viewport and nothing scrolls.
+- **Thread ids must be persisted** (`GUIDE.md` 8.3). Use `usePersistedThreadId("thread:<page>")` from `lib/use-persisted-thread.ts`. A run continues server-side after you navigate away, so dropping the id discards a live conversation. Two rules, both load-bearing: the hook reads `localStorage` in an effect, never a `useState` initializer (a `"use client"` component is still server-rendered, where `localStorage` does not exist); and the component that reads storage must **not** render the one owning `useStream` until the id is resolved — `useStream` assigns an id and calls `onThreadId` on mount, overwriting the stored value. Hence the outer/inner split in `features/approve/ApproveChat.tsx`.
+- `lib/state.ts` declares only what the UI renders. `create_agent` supplies langchain's `AgentState`; middleware adds more keys, which the server will list at `GET /assistants/<assistant_id>/schemas` if you need them.
+- Interrupt payloads are snake_case over raw HTTP (`action_requests`, `edited_action`) and camelCase through `useStream`. Components read camelCase; `curl` tests must use snake_case.
+
+### packages/frontend (Vite, reference only)
 
 - `@langchain/playground-agents` is not a real package: `src/agents-types.d.ts` declares it with `any` types so `useStream<typeof humanInTheLoopAgent>` compiles. Message state is not type-checked against the Python graph.
 - Shared chat UI (bubbles, input, markdown, cards) is re-exported from `src/components/playground.ts`.
@@ -46,3 +56,5 @@ If port 2024 is already taken, `langgraph dev` quietly starts on a random port, 
 ## GUIDE.md
 
 `GUIDE.md` is a long beginner's guide to `@langchain/react` and LangGraph frontend patterns (streaming, HITL, branching, time travel, deep agents), with section numbers used as references. Its examples name a `simple_agent` graph that does not exist in this repo.
+
+For the actual Next.js + Python architecture going forward, Vite is irrelevant. It's just a leftover reference copy sitting in the repo, not a moving part of the system you're building.
