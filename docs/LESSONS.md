@@ -163,9 +163,42 @@ if (last?.type === "human") {
 
 ### Branching
 
-- **A fork branches, it does not delete.** Old messages stay in `getHistory()`, they just stop appearing in `/state`. That history is what a `< 1/2 >` switcher would read.
-- **Fork ids come from history, not metadata.** `parentCheckpointId` is undefined for every message here, which silently disables every fork button. The checkpoint holding exactly `i` messages is the state just before message `i`.
-- Regenerate submits `undefined`, not `{}`.
+**Fork ids come from history, not message metadata.**
+- The guide uses `useMessageMetadata(stream, id)?.parentCheckpointId`.
+- It is documented as undefined "when the message was observed without a paired checkpoint envelope" — and here it is undefined for **every** message, reload or not.
+- Result: every Edit/Retry button silently disabled, with nothing in the console.
+- `threads.getHistory()` is authoritative and always populated.
+
+```ts
+const states = await client.threads.getHistory(threadId, { limit: 100 });
+const checkpoints = [...states].reverse();          // API returns newest first
+
+// The checkpoint holding exactly `i` messages is the state just BEFORE message `i`,
+// so resuming from it replays that turn. Last match wins: several checkpoints can
+// share a count within one step.
+function forkPointForMessage(checkpoints, i) {
+  let id;
+  for (const cp of checkpoints) {
+    if ((cp.values?.messages?.length ?? 0) === i) id = cp.checkpoint?.checkpoint_id ?? id;
+  }
+  return id;
+}
+```
+
+- Fetch it **once per thread**, in an effect keyed on `[threadId, stream.isLoading, stream.client]` — `isLoading` in the deps means it refreshes when a run *ends*, not on every streamed token.
+
+**A fork branches, it does not delete.**
+- `submit(input, { forkFrom })` moves the thread to a new branch.
+- Old messages stay in `getHistory()`, they just stop appearing in `/state`.
+- Verified: after forking, `/state` had 2 messages while history still held all 10 checkpoints including the dropped branch.
+- That history is also what a `< 1/2 >` branch switcher would read. v1 ships no built-in one.
+
+**The same data gives you time travel (8.4) almost free.**
+- List the checkpoints, show `cp.next.join(", ") || "done"` and the message count.
+- Resume with `submit({}, { forkFrom: cp.checkpoint.checkpoint_id })` — note the id is nested under `cp.checkpoint`, not top level.
+- Resuming re-runs every step after that checkpoint, LLM calls included, so results differ.
+
+**Regenerate submits `undefined`, not `{}`.**
 
 ### Placement
 
