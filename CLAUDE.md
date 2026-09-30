@@ -41,6 +41,8 @@ If port 2024 is already taken, `langgraph dev` quietly starts on a random port, 
 
 The app under active development. Run it with `make dev-next` (agent :2024 + Next :4200).
 
+`docs/BUILD.md` is a walkthrough of how it works, section by section, in `GUIDE.md`'s style. Read it before changing the chat surface — most of what looks arbitrary there is load-bearing.
+
 - `app/api/langgraph/[...path]/route.ts` proxies every agent call and injects `X-Api-Key` from `AGENT_SERVER_URL`/`LANGSMITH_API_KEY`. A `next.config` rewrite cannot add headers, which is why this is a route handler. The key is only set when present, so `langgraph dev` works locally with no key.
 - **Height chain.** `body` is `h-dvh flex flex-col`, `main` is `flex-1 min-h-0 flex flex-col`, and pages pass `embedded` to `ChatContainer`. `main` must stay a flex container: `flex-1` means nothing to a child of a block element, and the symptom is silent — the chat grows past the viewport and nothing scrolls.
 - **Thread ids must be persisted** (`GUIDE.md` 8.3). Use `usePersistedThreadId("thread:<page>")` from `lib/use-persisted-thread.ts`. A run continues server-side after you navigate away, so dropping the id discards a live conversation. Two rules, both load-bearing: the hook reads `localStorage` in an effect, never a `useState` initializer (a `"use client"` component is still server-rendered, where `localStorage` does not exist); and the component that reads storage must **not** render the one owning `useStream` until the id is resolved — `useStream` assigns an id and calls `onThreadId` on mount, overwriting the stored value. Hence the outer/inner split in `features/approve/ApproveChat.tsx`.
