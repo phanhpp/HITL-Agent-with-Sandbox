@@ -273,6 +273,51 @@ answer: `stream.submit(undefined, { forkFrom })` — `undefined`, not `{}`. Gate
 `!forkFrom || stream.isLoading`, because editing mid-stream races the run. Nothing is
 deleted: the old branch stays in checkpoint history, so the thread becomes a tree.
 
+**Attach an interrupt's UI to the turn it belongs to, not to the end of the thread.**
+The easy version renders approval cards in one block after the message list:
+
+```tsx
+{messages.map(...)}
+{pending && <ApprovalCards />}          // always at the bottom
+```
+
+That looks correct only while the reviewed turn happens to be the last one. Fork the
+thread, or send another message, and the card detaches from the tool call it is actually
+reviewing — it appears under an unrelated turn. Match the pending action to its message
+and render it in place:
+
+```tsx
+const pendingIndex = useMemo(() => {
+  if (!requests.length) return -1;
+  const names = new Set(requests.map((r) => r.name));
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (AIMessage.isInstance(m) && (m.tool_calls ?? []).some((tc) => names.has(tc.name)))
+      return i;
+  }
+  return -1;
+}, [requests, messages]);
+```
+
+Keep a bottom fallback for `pendingIndex === -1`, or an interrupt that matches nothing
+in view is swallowed and the user can never answer it. The same reasoning applies to
+anything anchored to a turn — tool cards, subagent cards, a "stopped" marker: derive its
+position from the message it describes, never from "latest".
+
+**A stopped turn leaves a hole, so say so.** After a successful cancel the human message
+persists with no reply after it. Render nothing and the thread silently shows a gap, and
+the *next* answer looks like it arrived out of order — which reads as a message-ordering
+bug rather than as a cancelled turn. Detect it (human message, no AI message following,
+nothing running, no interrupt pending) and label it, with a "Run again" that forks from
+that point.
+
+**Pick a probe whose output must vary.** "Retry gives the same answer" looked like a
+broken fork. It was a bad test: asking a model to "pick a random number" returns the
+same number on repeated calls — four direct model calls with no graph gave `537`, `537`,
+`537`, `737`. Use something whose phrasing must differ ("write a one-sentence story"),
+and confirm mechanically rather than by eye — a real re-run grows the checkpoint count,
+a replay does not.
+
 **Hover controls need a `group` on the wrapper.** `opacity-0 group-hover:opacity-100`
 does nothing unless an ancestor has `className="group"`. Add `focus-within:opacity-100`
 too, or the buttons are unreachable by keyboard.
