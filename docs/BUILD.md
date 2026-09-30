@@ -111,7 +111,17 @@ proxy does with an explicit rewrite rule.
 
 ### Keeping the stream flowing
 
-The agent streams tokens over SSE. Three things keep that working through the proxy:
+**Nothing here defines SSE.** The Python agent server does. Ask `/runs/stream` directly
+on port 2024 and it already answers:
+
+```
+content-type: text/event-stream; charset=utf-8
+cache-control: no-store
+x-accel-buffering: no
+```
+
+The SDK's default transport asks for that; LangGraph produces it. The proxy's only job
+is **not to break it** — and creating a new `Response` is exactly where it could:
 
 ```ts
 return new Response(upstream.body, { … });      // pass the stream, do not await it
