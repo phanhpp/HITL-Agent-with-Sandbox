@@ -2,6 +2,7 @@
 
 import { useCallback, useState } from "react";
 import type { AnyStream } from "@langchain/react";
+import { HumanMessage } from "langchain";
 
 /**
  * Actually stop the agent.
@@ -38,18 +39,29 @@ import type { AnyStream } from "@langchain/react";
  * substantive one.
  *
  * Rollback discards the run's writes, so the thread goes back to how it was before you
- * asked. It also discards a half-written reply, which is the deliberate trade: a partial
- * answer is worth less than a thread that stays coherent.
+ * asked — including your own question, which on its own feels like losing your input.
+ *
+ * So the question is captured here and handed back as `stoppedPrompt`, for the page to
+ * render CLIENT-SIDE ONLY. That satisfies both halves of the problem: you still see what
+ * you asked and can re-run it, while the model never sees it, because it is not in graph
+ * state and cannot be read as an unanswered turn on the next request.
  *
  * Neither action can remove a reply from a run that already FINISHED — there is nothing
  * left to cancel by then.
  */
 export function useStopRun(stream: AnyStream, threadId: string | null) {
   const [isStopping, setIsStopping] = useState(false);
+  /** The question whose turn was rolled back, kept for display only. */
+  const [stoppedPrompt, setStoppedPrompt] = useState<string | null>(null);
 
   const stopRun = useCallback(async () => {
     if (!threadId || isStopping) return;
     setIsStopping(true);
+
+    // Capture before cancelling: rollback is about to remove it from the thread.
+    const lastHuman = [...stream.messages].reverse().find((m) => HumanMessage.isInstance(m));
+    const prompt = lastHuman?.text?.trim() || null;
+
     try {
       const runs = await stream.client.runs.list(threadId, { limit: 10 });
       const active = runs.find((r) => r.status === "pending" || r.status === "running");
@@ -61,9 +73,12 @@ export function useStopRun(stream: AnyStream, threadId: string | null) {
     } finally {
       // cancel: false — we just cancelled it ourselves; this only detaches the client.
       await stream.stop({ cancel: false });
+      setStoppedPrompt(prompt);
       setIsStopping(false);
     }
   }, [stream, threadId, isStopping]);
 
-  return { stopRun, isStopping };
+  const clearStoppedPrompt = useCallback(() => setStoppedPrompt(null), []);
+
+  return { stopRun, isStopping, stoppedPrompt, clearStoppedPrompt };
 }

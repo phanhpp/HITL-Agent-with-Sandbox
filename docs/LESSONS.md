@@ -317,9 +317,28 @@ await client.runs.cancel(threadId, runId, /* wait */ true, "rollback");
 
 `rollback` discards the run's writes, so the thread returns to how it was before you
 asked — verified: zero messages after the cancel, and the next question gets its own
-answer. It also discards a half-written reply, which is the deliberate trade: a partial
-answer is worth less than a thread that stays coherent, and "stop" reading as "undo this
-turn" is the simpler contract to explain.
+answer.
+
+But rollback alone removes **your question** too, which reads as losing your input. The
+two requirements are not actually in conflict: the question has to be visible **to the
+user** and invisible **to the model**. So capture it before cancelling and render it
+client-side only, outside graph state:
+
+```ts
+const lastHuman = [...stream.messages].reverse().find((m) => HumanMessage.isInstance(m));
+const prompt = lastHuman?.text?.trim() || null;   // capture BEFORE the cancel
+await client.runs.cancel(threadId, runId, true, "rollback");
+setStoppedPrompt(prompt);                          // display only
+```
+
+Render it dimmed with "Stopped — not sent to the agent", a **Run again** that resubmits
+it, and a dismiss. The model never receives it, so it cannot be read as an unanswered
+turn; the user still sees what they asked.
+
+The general shape: **UI state and graph state are not the same thing.** When something
+must be shown but must not influence the next model call, keep it out of the graph and
+render it locally. Reaching for graph state because it is the convenient place to put a
+message is how the orphan bug happened in the first place.
 
 More generally: a partial write that survives a cancel is not neutral. Ask what the next
 turn will read, not just what the screen shows.

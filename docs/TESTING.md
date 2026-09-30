@@ -64,11 +64,13 @@ client while the agent kept generating.*
 
 | Step | Expect |
 | --- | --- |
-| Ask `h3 indexing in 300 words`, stop **before any reply** | Your question disappears from the thread entirely |
+| Ask `h3 indexing in 300 words`, stop **before any reply** | Question stays visible but dimmed, labelled `Stopped — not sent to the agent`, with **Run again** and a dismiss |
 | Then send `hey` | Agent replies to **"hey"**, not with an H3 explanation |
-| Ask something long, stop **mid-reply** | The whole turn is removed — question and partial reply both gone |
+| Click **Run again** on the stopped question instead | It is resubmitted and answered normally |
+| Dismiss it, then reload | The stopped question is gone — it was never in graph state |
 
-Stop always rolls the turn back, so there is never an orphaned question. The
+The stopped question is rendered client-side only. It is visible to you and invisible to
+the model, which is what stops it being read as an unanswered turn. The
 `No reply from the agent` marker therefore only appears if a run errors or times out.
 
 Verify server-side that a cancel actually goes out — the bug was silent:

@@ -55,7 +55,7 @@ export function ApproveChat({ threadId, onThreadId, onLeave }: ChatShellRenderPr
   // point is derived from this rather than from per-message metadata, which is
   // undefined here — see lib/use-checkpoints.ts.
   const checkpoints = useCheckpoints(stream, threadId);
-  const { stopRun, isStopping } = useStopRun(stream, threadId);
+  const { stopRun, isStopping, stoppedPrompt, clearStoppedPrompt } = useStopRun(stream, threadId);
   const pending = hitl.requests.length > 0;
   const hasMessages = messages.length > 0;
 
@@ -97,6 +97,8 @@ export function ApproveChat({ threadId, onThreadId, onLeave }: ChatShellRenderPr
     ) : null;
 
   const submit = (text: string) => {
+    // A new question supersedes the stopped one, so stop showing it.
+    clearStoppedPrompt();
     void stream.submit({ messages: [new HumanMessage(text)] });
   };
 
@@ -177,6 +179,40 @@ export function ApproveChat({ threadId, onThreadId, onLeave }: ChatShellRenderPr
           {index === pendingIndex && approvalCards}
         </Fragment>
       ))}
+
+      {/*
+        The question whose turn was rolled back. Rendered here but NOT in graph state:
+        you can see what you asked and re-run it, while the model never receives it — so
+        it cannot be mistaken for an unanswered turn on the next request, which is the
+        bug that made "stop then ask something else" answer the wrong question.
+      */}
+      {stoppedPrompt && !isLoading && (
+        <div>
+          <div className="opacity-50">
+            <HumanBubble>
+              <Markdown>{stoppedPrompt}</Markdown>
+            </HumanBubble>
+          </div>
+          <div className="flex items-center justify-end gap-2 mt-1 text-xs text-text-tertiary">
+            <span>Stopped — not sent to the agent</span>
+            <button
+              type="button"
+              onClick={() => submit(stoppedPrompt)}
+              className="text-primary hover:underline"
+            >
+              Run again
+            </button>
+            <button
+              type="button"
+              onClick={clearStoppedPrompt}
+              aria-label="Dismiss stopped message"
+              className="hover:text-text transition-colors"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
 
       {isLoading && !pending && <TypingIndicator />}
 
