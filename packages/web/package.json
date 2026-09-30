@@ -1,0 +1,32 @@
+{
+  "name": "@langchain-example/web",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --port 4200",
+    "build": "next build",
+    "start": "next start --port 4200",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@langchain/core": "^1.2.9",
+    "@langchain/langgraph-sdk": "^1.9.24",
+    "@langchain/react": "^1.0.35",
+    "@pierre/diffs": "^1.2.3",
+    "langchain": "^1.5.10",
+    "next": "^16.3.7",
+    "react": "^19",
+    "react-dom": "^19",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^24",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "postcss": "^8",
+    "tailwindcss": "^4",
+    "typescript": "^5.9"
+  }
+}

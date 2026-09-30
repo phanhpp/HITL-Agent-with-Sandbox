@@ -20,3 +20,7 @@ packages/agent/.langgraph_api/
 .DS_Store
 *.swp
 .idea/
+
+docs/
+# TypeScript build cache
+*.tsbuildinfo

@@ -2,7 +2,7 @@
 ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 VENV := $(ROOT)/.venv/bin/python
 
-.PHONY: install dev dev-agent dev-frontend
+.PHONY: install dev dev-web dev-agent dev-frontend dev-next typecheck
 
 # Creates .venv on first run (needs Python 3.11+ on PATH or via Homebrew python@3.12), then installs deps.
 install:
@@ -29,14 +29,27 @@ install:
 	  exit 1; \
 	}; \
 	"$(VENV)" -m pip install -r packages/agent/requirements.txt; \
-	cd packages/frontend && pnpm install
+	cd packages/frontend && pnpm install; \
+	cd "$(ROOT)/packages/web" && pnpm install
 
+# Agent + Vite frontend (port 4100), unchanged.
 dev:
 	@test -x "$(VENV)" || { echo "Run make install first." >&2; exit 1; }
 	$(MAKE) -j2 dev-agent dev-frontend
+
+# Agent + Next.js app (port 4200).
+dev-next:
+	@test -x "$(VENV)" || { echo "Run make install first." >&2; exit 1; }
+	$(MAKE) -j2 dev-agent dev-web
 
 dev-agent:
 	cd "$(ROOT)/packages/agent" && "$(VENV)" -m langgraph_cli dev --host 0.0.0.0 --port 2024 --no-browser
 
 dev-frontend:
 	cd "$(ROOT)/packages/frontend" && pnpm run dev
+
+dev-web:
+	cd "$(ROOT)/packages/web" && pnpm run dev
+
+typecheck:
+	cd "$(ROOT)/packages/web" && pnpm run typecheck
