@@ -259,6 +259,49 @@ started a new run.
 The subagent branch is written from the types and is **unverified** until
 `/orchestrate` exists to raise one.
 
+### The stream says an interrupt happened, never that it stopped mattering
+
+`stream.interrupt` resets to null *"as the agent resumes streaming"*. A resume is
+`submit(null, { command: { resume } })`. **A fork is `submit(undefined, { forkFrom })`,
+which is not a resume** — so after Edit or Retry the stream keeps an interrupt the
+thread has no task for, and a dead approval card locks the composer until a reload.
+
+Measured at the same instant:
+
+| Server `/threads/{id}/state` | UI |
+|---|---|
+| `next: []`, `tasks: []` — nothing pending | "Review Required", composer locked |
+
+A reload cleared it, which is the clue: `useStream` rehydrates the interrupt from the
+**thread checkpoint**, and the checkpoint had none.
+
+So the checkpoint decides *whether* an approval is pending; the stream only supplies
+*what* it contains. `getHistory()` already carries it on `tasks[].interrupts`, so this
+costs no extra request — and it is branch-aware, which `stream.interrupt` is not:
+
+```ts
+// lib/use-branching.ts — threadHead is the tip of the branch on screen
+const pendingOnBranch = (branchContext.threadHead?.tasks ?? [])
+  .some((task) => (task?.interrupts?.length ?? 0) > 0);
+
+const approvalPending: boolean | null = forkInFlight
+  ? false                                 // a fork replays decisions already made
+  : stream.isLoading || !historyFresh
+    ? null                                // live run: do not second-guess the stream
+    : pendingOnBranch;                    // idle: the checkpoint is the truth
+```
+
+The three states are the whole design. `false` only once we have actually checked;
+`null` means "do not suppress", so a freshly raised approval is never hidden.
+
+`forkInFlight` earns its place: gating on the checkpoint alone still flashed the card
+for ~4s, because during the run the verdict is `null`. An interrupt the forked run
+genuinely raises still appears — pausing *is* a run end, which triggers the refresh that
+lifts the suppression.
+
+This also fixed a second bug: the card followed the stream, not the branch, so switching
+to a branch where an approval really was pending showed nothing.
+
 ### Cards attach to their own turn
 
 Rendering the cards after the message list puts them at the bottom, which is only right
@@ -471,6 +514,25 @@ void stream.submit({ messages: [new HumanMessage(text)] }, { forkFrom: tip });
 Verified: on a branch whose dog chased squirrels, "what was the dog chasing?" answered
 *squirrels* — the sibling branch's story has no chasing in it.
 
+### 8.6 Why the transcript flashed during a fork
+
+Retry made the message list jump four times in 100ms, collapsing from 1026 to 307
+characters before refilling. Three separate causes, found by sampling the DOM every
+16ms:
+
+| Cause | Fix |
+|---|---|
+| `isLoading` flickers true -> false -> true as a fork starts, because an interrupt is a terminal phase. The plain falling edge fired mid-fork and cleared state the transcript needed. | Wait `RUN_END_SETTLE_MS` for the signal to settle before treating a run as finished. |
+| A fork makes `useStream` rebuild its list from the fork point, so `stream.messages` briefly holds **one** message. | Capture the fork point's messages as a floor and render those until the stream passes it. Checked **before** `isLoading`, which is false for part of that window. |
+| At run end the transcript swapped to branch history before the refresh landed, showing the branch just left — measured as `2027 -> 1273 -> 1232`. | `historyFresh`: hold the stream's messages until a refresh lands. |
+
+Result on a plain chat thread: the transcript holds steady through the first second,
+where it previously changed four times.
+
+The reference pattern cannot help here — its graph has no interrupts, so it never sees
+the `isLoading` flicker. Confirmed by running the same Retry on a thread with no tool
+call, where the transcript never collapsed at all.
+
 ### 8.6 Three things worth knowing
 
 - **A fork branches, it does not delete.** Old messages stay in `getHistory()`, they
@@ -495,14 +557,14 @@ has discarded.
 | `app/layout.tsx` | 36 | Nav + `h-dvh flex flex-col` shell |
 | `app/approve/page.tsx` | 11 | Server wrapper, exports `metadata` |
 | `features/approve/ApproveClient.tsx` | 23 | `dynamic(ssr:false)` boundary (§3) |
-| `features/approve/ApproveChat.tsx` | 313 | The page: `useStream`, messages, cards |
+| `features/approve/ApproveChat.tsx` | 321 | The page: `useStream`, messages, cards |
 | `components/ChatShell.tsx` | 138 | Thread id, rejoin, remount (§4) |
 | `components/ApprovalCard.tsx` | 302 | Approve / edit / reject UI |
 | `components/ToolCallCard.tsx` | 58 | Tool call + result (§6) |
 | `components/ForkControls.tsx` | 154 | Edit / Retry buttons + editor (§8) |
-| `lib/use-hitl.ts` | 117 | Decisions, both interrupt locations (§5) |
+| `lib/use-hitl.ts` | 129 | Decisions, both interrupt locations (§5) |
 | `lib/use-stop-run.ts` | 75 | Real cancel + close the turn (§7) |
-| `lib/use-branching.ts` | 212 | History → fork points, branch tree (§8) |
+| `lib/use-branching.ts` | 393 | History → fork points, branch tree (§8) |
 | `components/BranchSwitcher.tsx` | 50 | `‹ Branch 1/2 ›` control (§8) |
 | `lib/agent.ts` | 41 | SSR-safe URL, graph names |
 | `lib/state.ts` | 45 | `AgentState` for `useStream<T>` |

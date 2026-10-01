@@ -250,6 +250,63 @@ Implemented in `packages/web/lib/use-branching.ts`.
 
 **Regenerate submits `undefined`, not `{}`.**
 
+### Interrupts
+
+**A stream tells you an interrupt happened, never that it stopped mattering.**
+- `stream.interrupt` resets to null only on a **resume** — `submit(null, { command: { resume } })`.
+- A fork is `submit(undefined, { forkFrom })`. Not a resume. The reset never fires.
+- Symptom: after Edit or Retry a dead approval card renders and locks the composer, and only a reload clears it.
+- The reload is the clue — `useStream` rehydrates the interrupt from the **thread checkpoint**.
+
+**Diagnose it by asking the server:**
+
+```bash
+curl -s localhost:2024/threads/<id>/state | python3 -m json.tool | head -20
+```
+
+- `next: []` and `tasks: []` while the UI shows a card = the client is holding a ghost.
+
+**The checkpoint is the authority; the stream is only the delivery.**
+- `getHistory()` entries carry `tasks[].interrupts` — same payload as `/state`, so no extra request if you already fetch history.
+- It is also **branch-aware**. `stream.interrupt` is not: switch to a branch with a real pending approval and nothing renders.
+- Use it as a **gate**, not a source: history is snake_case (`action_requests`), the stream is camelCase. Gating needs no mapping.
+
+**Make the verdict three-valued, not boolean.**
+
+| Value | Meaning |
+|---|---|
+| `false` | checked, nothing pending — suppress the retained interrupt |
+| `null` | live run, or history not caught up — **do not** suppress, or a fresh approval is hidden |
+| `true` | the branch tip really has one |
+
+- During a fork, force `false`: a fork replays decisions already made.
+- A real interrupt the forked run raises still appears — pausing *is* a run end, which triggers the refresh that lifts the suppression.
+
+### Transitions during a fork
+
+**`isLoading` flickers true → false → true when a fork starts**, because an interrupt is a terminal phase.
+- A plain falling edge fires mid-fork and tears down state the UI still needs.
+- Wait for it to settle (~250ms) before calling a run finished.
+
+**A fork makes `useStream` rebuild its list from the fork point**, so `messages` briefly holds one entry.
+- Rendering that collapses the whole transcript.
+- The fork point's own messages cannot change — keep them as a floor until the stream passes it.
+- Check the floor **before** `isLoading`, which is false for part of that window.
+
+**Do not swap to history the instant a run ends.** It still describes the branch you left — measured as 2027 → 1273 → 1232 characters. Hold the streamed messages until the refresh lands.
+
+**Measure it, do not eyeball it.** Hash the transcript every 16ms and record only changes:
+
+```js
+setInterval(() => {
+  const t = document.querySelector('main').innerText;
+  if (t !== last) samples.push({ ms: performance.now(), len: t.length });
+}, 16);
+```
+
+- Counting size changes turns "feels laggy" into 4 jumps in 56ms, with timestamps.
+- A truncated sample is a useless probe: slicing to 200 characters hid a branch switch entirely, because the branches differ further down.
+
 ### Placement
 
 - **Anchor per-turn UI to its turn, not the thread bottom.**
