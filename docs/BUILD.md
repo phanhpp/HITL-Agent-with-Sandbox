@@ -302,6 +302,60 @@ lifts the suppression.
 This also fixed a second bug: the card followed the stream, not the branch, so switching
 to a branch where an approval really was pending showed nothing.
 
+### How `useBranching` and `useHitl` work together
+
+Think of `useBranching` as the **database manager** and `useHitl` as the **UI card
+renderer**.
+
+The problem they solve between them:
+
+- `useHitl` knows how to render the Approve / Reject card. But it gets its information
+  from `useStream`, which has a terrible memory — it gets stuck remembering old
+  approvals from minutes ago.
+- `useBranching` reads the official checkpoint history. It knows with certainty whether
+  a real approval is waiting **right now, on the active branch**.
+
+So `ApproveChat` chains them rather than letting `useHitl` guess:
+
+```
+               ┌──────────────────────────────┐
+               │         useBranching         │
+               │  (reads checkpoint history)  │
+               └──────────────┬───────────────┘
+                              │ one signal:
+                              │ approvalPending (true / false / null)
+                              ▼
+               ┌──────────────────────────────┐
+               │           useHitl            │
+               │     (renders the UI card)    │
+               └──────────────────────────────┘
+```
+
+**Step 1 — `useBranching` evaluates the checkpoint.** It looks at the snapshot at the tip
+of the branch on screen (`threadHead`) and sets one flag:
+
+| `approvalPending` | Meaning |
+|---|---|
+| `false` | Checked, or a fork is running: there is **no** pending approval. Overrule the stream. |
+| `true` | The checkpoint confirms an approval **is** waiting. |
+| `null` | Don't second-guess the stream — either the agent is typing live, **or** history has not caught up yet. |
+
+That third row is why a genuinely new approval is never hidden: until a refresh has
+actually landed, the hook refuses to claim there is nothing pending.
+
+**Step 2 — `useHitl` uses the flag as an on/off switch.** It still takes the card's
+*contents* from the stream, but checks the flag before rendering:
+
+```ts
+// lib/use-hitl.ts
+const stale = approvalPending === false;
+const requests      = stale ? [] : (request?.actionRequests ?? []);
+const reviewConfigs = stale ? [] : (request?.reviewConfigs  ?? []);
+```
+
+In one sentence: **`useBranching` is a light switch, and `useHitl` only turns the
+"Review Required" card on when the switch is flipped.**
+
 ### Cards attach to their own turn
 
 Rendering the cards after the message list puts them at the bottom, which is only right

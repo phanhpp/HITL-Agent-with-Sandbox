@@ -1,64 +1,86 @@
-# human-in-the-loop — LangChain Pattern
+# Agent UI patterns
 
-This is a standalone **React** + **Python** project for the **human-in-the-loop** LangChain UI pattern.
+A chat interface over a real LangGraph agent: streaming, human approval, conversation
+branching, and rejoining a run after a reload. Nothing is mocked — every pause is a
+real graph interrupt, every branch a real checkpoint.
 
-The repo layout uses a **Makefile** at the project root (no root `package.json`). The only `package.json` is under `packages/frontend` for the Vite app; the agent is Python under `packages/agent`.
+Built as a worked example of the frontend problems an agent UI actually has.
 
-The agent server is started with the **Python LangGraph CLI** (`.venv/bin/python -m langgraph_cli dev` via the Makefile), not the Node/npm CLI. `requirements.txt` includes `langgraph-cli[inmem]` so the in-memory dev server from the [local server](https://docs.langchain.com/oss/python/langgraph/local-server) guide is available after `pip install` into the project `.venv`. `make install` creates `.venv` at the repo root (using `python3.12` or `python3.11` on your `PATH`, or Homebrew `python@3.12` when available) and installs dependencies; paths with spaces in the project directory are supported.
+## What is built
 
-## Prerequisites
+**`/approve`** — the agent proposes sending an email and stops. You approve, edit or
+reject it.
 
-- Node.js 22+
-- [pnpm](https://pnpm.io/) (`npm install -g pnpm`)
-- An [Anthropic API key](https://console.anthropic.com/)
-- A **Python 3.11+** interpreter discoverable as `python3.12` / `python3.11` or via Homebrew `python@3.12` (required by `langgraph-cli[inmem]`; macOS `/usr/bin/python3` is often too old — install [Homebrew](https://brew.sh/) Python if needed)
-- [GNU Make](https://www.gnu.org/software/make/)
+| Capability | What it does |
+|---|---|
+| Interrupt / resume | The agent pauses before a sensitive tool; the card survives a reload |
+| Branching | Edit or Retry any message, with a `‹ 1/2 ›` switcher between branches |
+| Rejoin | Reload or navigate away and come back to the same conversation, still running |
+| Stop | Cancels the run server-side, not just the spinner |
+| Tool-call cards | Arguments and results, attached to the turn that made the call |
 
-If `make install` fails to find a suitable Python, install 3.11+ and ensure `python3.12` is on your `PATH`, or install `python@3.12` via Homebrew. If the wrong Python was used to create `.venv`, run `rm -rf .venv && make install`.
+`/orchestrate` (deep agent, subagent cards, sandbox) is planned, not built.
 
-### Node version
+## Two processes
 
-Every `make` command that touches the frontend (`install`, `dev`, `dev-frontend`) uses whichever `node` your terminal finds first. With Node older than 22, `pnpm` fails (e.g. `TypeError: URL.canParse is not a function`).
+They only talk over HTTP.
 
-Check with `node -v`. If you use [nvm](https://github.com/nvm-sh/nvm), run this in the repo root **in each new terminal** before `make` (it reads the version from `.nvmrc`):
-
-```bash
-nvm use
+```
+Browser
+   │  same-origin: /api/langgraph/...
+   ▼
+packages/web   Next.js 16 — pages + a proxy route that injects the API key
+   │  http://127.0.0.1:2024  (local)  |  https://<id>.us.langgraph.app  (deployed)
+   ▼
+packages/agent  Python — LangGraph server: graphs, threads, checkpoints
+   ▼
+Anthropic API
 ```
 
-To stop needing this, make sure nvm is loaded **last** in your `~/.zshrc`: if a line after it prepends `/usr/local/bin` or `/opt/homebrew/bin` to `PATH`, an older system Node wins and `nvm alias default` has no effect.
+The proxy is a route handler rather than a `next.config` rewrite because a rewrite
+cannot add headers, so the LangSmith key would have to reach the browser.
 
-## Setup
+## Quickstart
 
-1. Copy the environment file and add your API key:
-  ```bash
-   cp .env.example packages/agent/.env
-   # Edit packages/agent/.env and add your ANTHROPIC_API_KEY
-  ```
-2. Install Python and frontend dependencies:
-  ```bash
-   make install
-  ```
-
-
-
-## Running
+Needs Node 22+ (`.nvmrc` says 24), pnpm, Python 3.11+, GNU Make, and an
+[Anthropic API key](https://console.anthropic.com/).
 
 ```bash
-make dev
+cp .env.example packages/agent/.env     # then add ANTHROPIC_API_KEY
+make install                            # .venv + pnpm install
+make dev-next                           # agent :2024 + Next.js :4200
 ```
 
-This starts both the LangGraph agent server (port 2024) and the Vite frontend (port 4100).
+Open [http://localhost:4200](http://localhost:4200).
 
-The Vite dev server proxies `/api/langgraph` to `http://127.0.0.1:2024`, and the app uses that same-origin URL for the LangGraph SDK (no browser CORS issues in local dev).
+`packages/web/.env.local` is optional locally — `AGENT_SERVER_URL` defaults are in
+`.env.local.example`, and `langgraph dev` needs no API key.
 
-Open [http://localhost:4100](http://localhost:4100) in your browser.
+| Command | Runs |
+|---|---|
+| `make dev-next` | agent + Next.js app — **this is the project** |
+| `make dev-agent` | LangGraph server only, port 2024 |
+| `make dev-web` | Next.js only, port 4200 |
+| `make typecheck` | `tsc --noEmit` — the only automated gate |
+| `make dev` | agent + the old Vite app, port 4100 (reference only) |
 
-To run the two parts in separate terminals instead:
+## Layout
 
-```bash
-make dev-agent      # LangGraph agent server on port 2024
-make dev-frontend   # Vite frontend on port 4100
-```
+| Path | What |
+|---|---|
+| `packages/web` | **The app.** Next.js 16 App Router, Tailwind v4 |
+| `packages/agent` | The Python graph. `langgraph.json` registers `human_in_the_loop` |
+| `packages/frontend` | The original Vite app, kept as a reference. Not part of the system |
 
-Stop either with `Ctrl+C`.
+## Troubleshooting
+
+- **The UI behaves unlike the Python code.** If port 2024 is taken, `langgraph dev`
+  quietly starts on a random port while the app keeps talking to 2024. Check with
+  `lsof -nP -iTCP:2024 -sTCP:LISTEN`.
+- **`pnpm` fails with `URL.canParse is not a function`.** Node older than 22. Run
+  `nvm use` in the repo root, in each new terminal.
+- **`make install` cannot find Python.** Needs 3.11+ as `python3.12`/`python3.11` on
+  `PATH`, or Homebrew `python@3.12`. If `.venv` was built with the wrong one,
+  `rm -rf .venv && make install`.
+- **Inspect server state directly.** `curl localhost:2024/threads/<id>/state` is the
+  truth; `threads/search` returns a stale snapshot.

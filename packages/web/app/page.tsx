@@ -6,7 +6,7 @@ const PAGES = [
     href: "/approve",
     title: "Approve",
     blurb: "The agent proposes sending an email and stops. You approve, edit, or reject it.",
-    shows: ["interrupt / resume", "tool-call cards", "optimistic retry"],
+    shows: ["interrupt / resume", "branching: edit & retry", "rejoin after reload", "stop a run"],
   },
 ];
 
@@ -18,8 +18,8 @@ export default function Home() {
           Agent UI patterns
         </h1>
         <p className="mt-3 text-text-secondary max-w-2xl">
-          Three pages over a LangGraph agent, each solving a different frontend problem.
-          Streaming, interrupts, and checkpoints are real — nothing here is mocked.
+          A chat surface over a real LangGraph agent. Streaming, interrupts and
+          checkpoints are live — nothing here is mocked.
         </p>
 
         <div className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">

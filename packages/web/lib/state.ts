@@ -25,8 +25,7 @@ import type { BaseMessage, Todo } from "langchain";
 
 /**
  * langchain's built-in agent state, and the base of deepagents' DeepAgentState.
- * `messages` is append-only. Used by /approve (human_in_the_loop) and
- * /rewind (chat).
+ * `messages` is append-only. Used by /approve (human_in_the_loop).
  */
 export interface AgentState {
   messages: BaseMessage[];
