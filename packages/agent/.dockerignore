@@ -1,0 +1,7 @@
+# Secrets never belong in the build archive. `langgraph deploy` reads this .env and
+# uploads each key as a managed deployment secret, so the file itself is not needed
+# in the image -- and the root .gitignore may not be consulted from this directory.
+.env
+.env.*
+.langgraph_api/
+__pycache__/
