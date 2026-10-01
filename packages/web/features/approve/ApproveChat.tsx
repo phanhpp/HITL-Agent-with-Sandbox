@@ -50,10 +50,11 @@ export function ApproveChat({ threadId, onThreadId, onLeave, reconnect }: ChatSh
   });
 
   const { isLoading } = stream;
-  const hitl = useHitl(stream);
 
   // Fork points, branch info and the branch tip. See lib/use-branching.ts.
   const branching = useBranching(stream, threadId);
+  // Gated on the branch checkpoint so a forked-away interrupt stops rendering a card.
+  const hitl = useHitl(stream, branching.approvalPending);
   // Branch history when idle, live stream while running. See lib/use-branching.ts.
   const messages = branching.selectMessages(stream.messages);
   const { stopRun, isStopping } = useStopRun(stream, threadId);

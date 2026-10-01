@@ -80,6 +80,16 @@ export function useBranching(stream: AnyStream, threadId: string | null) {
   const selectForkHead = useRef(false);
 
   /**
+   * True from the moment a fork is submitted until the refresh that follows it.
+   *
+   * A fork REPLAYS the branch, so every interrupt the stream emits during that window
+   * is a re-run of a decision already made. Trusting the stream there flashed a dead
+   * approval card for ~4s. An interrupt the forked run genuinely raises still appears:
+   * it pauses the run, which triggers the refresh, which clears this flag.
+   */
+  const [forkInFlight, setForkInFlight] = useState(false);
+
+  /**
    * Messages as they stood at the fork point.
    *
    * Starting a fork run makes useStream rebuild its list from that checkpoint, so
@@ -92,6 +102,7 @@ export function useBranching(stream: AnyStream, threadId: string | null) {
   const markFork = useCallback(
     (forkFromId: string) => {
       selectForkHead.current = true;
+      setForkInFlight(true);
       const state = history.find((h) => h.checkpoint?.checkpoint_id === forkFromId);
       const raw = (state?.values as { messages?: unknown } | undefined)?.messages;
       setForkPrefix(
@@ -112,6 +123,7 @@ export function useBranching(stream: AnyStream, threadId: string | null) {
       })) as HistoryState[];
       setHistory(states);
       setHistoryFresh(true);
+      setForkInFlight(false);
 
       // A fork creates a lineage that `activeBranch` does not name. Left alone, the old
       // path no longer matches a fork item and getBranchView falls back to a different
@@ -208,6 +220,34 @@ export function useBranching(stream: AnyStream, threadId: string | null) {
   const branchTipCheckpointId = branchContext.threadHead?.checkpoint?.checkpoint_id;
 
   /**
+   * Whether an approval is pending ON THE BRANCH IN VIEW, read from the checkpoint.
+   *
+   * The docs say `stream.interrupt` resets to null "as the agent resumes streaming".
+   * A fork is not a resume, so after Edit or Retry the stream keeps an interrupt the
+   * server has no task for: an approval card renders and locks the composer over
+   * nothing, until a reload rehydrates from the checkpoint and clears it.
+   *
+   * The checkpoint is the documented home of an interrupt, and getHistory already
+   * carries it on `tasks[].interrupts` -- so this costs no extra request, and it is
+   * branch-aware, which `stream.interrupt` is not.
+   */
+  const pendingOnBranch = useMemo(() => {
+    const tasks = branchContext.threadHead?.tasks;
+    if (!Array.isArray(tasks)) return false;
+    return tasks.some((task) => (task?.interrupts?.length ?? 0) > 0);
+  }, [branchContext.threadHead]);
+
+  /**
+   * null means "do not second-guess the stream": a live run, or history that has not
+   * caught up yet. Suppressing then would hide a genuine, freshly raised approval.
+   */
+  const approvalPending: boolean | null = forkInFlight
+    ? false
+    : stream.isLoading || !historyFresh
+      ? null
+      : pendingOnBranch;
+
+  /**
    * message id -> fork point and branch info.
    *
    * For each message, find the oldest state whose values.messages contains it — the
@@ -300,6 +340,8 @@ export function useBranching(stream: AnyStream, threadId: string | null) {
     activeBranch,
     switchBranch,
     refreshHistory,
+    /** false = the branch tip has no interrupt, so any retained one is stale. */
+    approvalPending,
     /** Call right before submitting a fork so the view follows the new branch. */
     markFork,
   };

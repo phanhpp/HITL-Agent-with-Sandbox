@@ -31,7 +31,15 @@ export interface HitlState {
   edit: (index: number, editedArgs: Record<string, unknown>) => void;
 }
 
-export function useHitl(stream: AnyStream): HitlState {
+export function useHitl(
+  stream: AnyStream,
+  /**
+   * Checkpoint-backed verdict on whether an approval is really pending.
+   * `false` suppresses a retained interrupt the server has moved past (see
+   * lib/use-branching.ts). `null`/omitted trusts the stream.
+   */
+  approvalPending?: boolean | null,
+): HitlState {
   const [isProcessing, setIsProcessing] = useState(false);
 
   /*
@@ -53,8 +61,12 @@ export function useHitl(stream: AnyStream): HitlState {
   const nestedRequest = nested?.[0]?.payload as HITLRequest | undefined;
 
   const request = rootRequest ?? nestedRequest;
-  const requests = request?.actionRequests ?? [];
-  const reviewConfigs = request?.reviewConfigs ?? [];
+
+  // A fork never resolves the interrupt it replayed, so the stream can hold one the
+  // thread has no task for. The checkpoint decides; the stream only supplies the body.
+  const stale = approvalPending === false;
+  const requests = stale ? [] : (request?.actionRequests ?? []);
+  const reviewConfigs = stale ? [] : (request?.reviewConfigs ?? []);
 
   const send = useCallback(
     async (build: () => HITLResponse) => {
