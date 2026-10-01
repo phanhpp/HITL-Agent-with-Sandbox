@@ -11,7 +11,11 @@ import {
 } from "@langchain/react";
 
 import { StatusBadge } from "@/components/cards/StatusBadge";
+import { DurationDisplay } from "@/components/cards/DurationDisplay";
+import { JsonViewer } from "@/components/cards/JsonViewer";
 import { Markdown } from "@/components/Markdown";
+import { ReasoningTrace } from "@/components/chat/ReasoningTrace";
+import { reasoningText } from "@/lib/reasoning";
 
 const TOOL_STATE_STYLES = {
   running: "text-primary",
@@ -77,36 +81,113 @@ export function SubagentCard({
   stream: AnyStream;
   subagent: SubagentDiscoverySnapshot;
 }) {
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const [open, setOpen] = useState(true);
+  // Open while running, folded away once finished. This is not only cosmetic: the
+  // body owns ref-counted subscriptions (see SubagentCardBody), so collapsing a
+  // finished card is what releases them.
+  const [open, setOpen] = useState(subagent.status === "running");
+  const touched = useRef(false);
 
+  useEffect(() => {
+    // A manual toggle always wins over the automatic open/collapse.
+    if (!touched.current) setOpen(subagent.status === "running");
+  }, [subagent.status]);
+
+  // `taskInput` is the instruction the coordinator actually gave this worker, which is
+  // the useful subtitle. (This used to print the namespace, a debug string.)
+  const subtitle = subagent.taskInput?.trim();
+
+  const hasDuration =
+    subagent.status === "running" ||
+    (subagent.completedAt != null && +subagent.completedAt - +subagent.startedAt >= 100);
+
+  return (
+    <div className="rounded-lg border border-border bg-surface-secondary overflow-hidden flex flex-col">
+      <button
+        type="button"
+        onClick={() => {
+          touched.current = true;
+          setOpen((v) => !v);
+        }}
+        aria-expanded={open}
+        className="flex w-full items-center justify-between px-3 py-2 text-sm font-medium text-text hover:bg-surface-tertiary transition-colors"
+      >
+        <span className="flex items-center gap-2 min-w-0">
+          <span className={`text-xs transition-transform ${open ? "rotate-90" : ""}`}>▶</span>
+          <span className="truncate">{subagent.name}</span>
+        </span>
+        <span className="flex items-center gap-2 shrink-0">
+          {/* Suppressed when it would read "0.0s": after a rejoin the snapshots are
+              rebuilt from the thread rather than observed live, so startedAt and
+              completedAt collapse onto the same instant. A wrong duration is worse
+              than none. */}
+          {hasDuration && (
+            <DurationDisplay
+              startTime={+subagent.startedAt}
+              endTime={subagent.completedAt ? +subagent.completedAt : undefined}
+            />
+          )}
+          {/* SubagentDiscoverySnapshot.status is exactly "running" | "complete" |
+              "error", which StatusBadge already accepts. No mapping needed. */}
+          <StatusBadge status={subagent.status} />
+        </span>
+      </button>
+
+      {open && (
+        <div className="border-t border-border flex flex-col min-h-0">
+          {subtitle && (
+            <p className="px-3 pt-2 pb-1 text-xs text-text-tertiary line-clamp-2 m-0">
+              {subtitle}
+            </p>
+          )}
+          <SubagentCardBody stream={stream} subagent={subagent} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The inside of an expanded card.
+ *
+ * This is a SEPARATE component, and that is the whole point: `useMessages` and
+ * `useToolCalls` open ref-counted subscriptions for as long as they are mounted. With
+ * the hooks in the card itself, every subagent in the thread streams whether or not
+ * anyone has the card open. Mounted only when `open`, they are released on collapse.
+ */
+function SubagentCardBody({
+  stream,
+  subagent,
+}: {
+  stream: AnyStream;
+  subagent: SubagentDiscoverySnapshot;
+}) {
+  const scrollRef = useRef<HTMLDivElement>(null);
   const messages = useMessages(stream, subagent);
   const toolCalls = useToolCalls(stream, subagent);
-
-  const statusMap: Record<string, "pending" | "running" | "complete" | "error"> = {
-    pending: "pending",
-    running: "running",
-    complete: "complete",
-    error: "error",
-  };
-  const status = statusMap[subagent.status] ?? "running";
+  const running = subagent.status === "running";
 
   type ContentItem =
+    | { kind: "reasoning"; message: (typeof messages)[number]; key: string }
     | { kind: "text"; content: string; key: string }
     | { kind: "tool_call"; call: AssembledToolCall; key: string };
 
   const contentItems = useMemo(() => {
     const items: ContentItem[] = [];
-    const seenToolCallIds = new Set<string>();
+    const seen = new Set<string>();
     for (const msg of messages) {
       if (!AIMessage.isInstance(msg)) continue;
+      // Reasoning first: `msg.text` excludes thinking blocks, so without this the
+      // subagent's entire thought process is silently dropped.
+      if (reasoningText(msg)) {
+        items.push({ kind: "reasoning", message: msg, key: `r-${msg.id}` });
+      }
       if (msg.text.trim()) {
         items.push({ kind: "text", content: msg.text, key: `text-${msg.id}` });
       }
-      const msgToolCallIds = new Set(msg.tool_calls?.map((t) => t.id) ?? []);
+      const ids = new Set(msg.tool_calls?.map((t) => t.id) ?? []);
       for (const tc of toolCalls) {
-        if (msgToolCallIds.has(tc.callId) && !seenToolCallIds.has(tc.callId)) {
-          seenToolCallIds.add(tc.callId);
+        if (ids.has(tc.callId) && !seen.has(tc.callId)) {
+          seen.add(tc.callId);
           items.push({ kind: "tool_call", call: tc, key: `tc-${tc.callId}` });
         }
       }
@@ -114,83 +195,72 @@ export function SubagentCard({
     return items;
   }, [messages, toolCalls]);
 
-  // Title / description: pulled from the subagent name and namespace.
-  const title = subagent.name ?? "Subagent";
-  const taskDescription = `Namespace: ${subagent.namespace.join("/") || "(root)"}`;
-
   useEffect(() => {
-    if (status === "running") setOpen(true);
-  }, [status]);
-
-  useEffect(() => {
-    if (scrollRef.current && status === "running") {
+    if (scrollRef.current && running) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [contentItems.length, status]);
+  }, [contentItems.length, running]);
 
   return (
     <div
-      className="rounded-lg border border-border bg-surface-secondary overflow-hidden flex flex-col"
-      data-testid="sdk-preview-chat-turn"
+      ref={scrollRef}
+      className="px-3 py-2 overflow-y-auto space-y-1.5"
+      style={{ maxHeight: "12rem" }}
     >
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        className="flex w-full items-center justify-between px-3 py-2 text-sm font-medium text-text hover:bg-surface-tertiary transition-colors"
-      >
-        <span className="flex items-center gap-2 min-w-0">
-          <span className={`text-xs transition-transform ${open ? "rotate-90" : ""}`}>▶</span>
-          <span className="truncate">{title}</span>
-        </span>
-        <StatusBadge status={status} />
-      </button>
-
-      {open && (
-        <div className="border-t border-border flex flex-col min-h-0">
-          <p className="px-3 pt-2 pb-1 text-xs text-text-tertiary truncate m-0">
-            {taskDescription}
-          </p>
-
-          <div
-            ref={scrollRef}
-            className="px-3 py-2 overflow-y-auto space-y-1.5"
-            style={{ maxHeight: "12rem" }}
-          >
-            {contentItems.map((item, i) =>
-              item.kind === "text" ? (
-                <div key={item.key} className="text-sm text-text-secondary">
-                  <Markdown>{item.content}</Markdown>
-                  {status === "running" && i === contentItems.length - 1 && (
-                    <span className="animate-pulse ml-0.5 text-primary">▌</span>
-                  )}
-                </div>
-              ) : (
-                <SubagentToolCallRow key={item.key} toolCall={item.call} />
-              ),
+      {contentItems.map((item, i) =>
+        item.kind === "reasoning" ? (
+          <ReasoningTrace
+            key={item.key}
+            message={item.message}
+            variant="inline"
+            isStreaming={running && i === contentItems.length - 1}
+          />
+        ) : item.kind === "text" ? (
+          <div key={item.key} className="text-sm text-text-secondary">
+            <Markdown>{item.content}</Markdown>
+            {running && i === contentItems.length - 1 && (
+              <span className="animate-pulse ml-0.5 text-primary">▌</span>
             )}
-
-            {contentItems.length === 0 &&
-              (status === "running" || status === "pending" ? (
-                <div className="flex items-center gap-1.5 text-text-tertiary">
-                  {[0, 1, 2].map((i) => (
-                    <span
-                      key={i}
-                      className="w-1.5 h-1.5 rounded-full bg-current animate-bounce"
-                      style={{ animationDelay: `${i * 150}ms` }}
-                    />
-                  ))}
-                  <span className="text-xs ml-1">
-                    {status === "pending" ? "Queued…" : "Working…"}
-                  </span>
-                </div>
-              ) : status === "error" ? (
-                <p className="text-xs text-error m-0">
-                  An error occurred while running this subagent.
-                </p>
-              ) : null)}
           </div>
-        </div>
+        ) : (
+          <SubagentToolCallRow key={item.key} toolCall={item.call} />
+        ),
       )}
+
+      {contentItems.length === 0 &&
+        (running ? (
+          <div className="flex items-center gap-1.5 text-text-tertiary">
+            {[0, 1, 2].map((i) => (
+              <span
+                key={i}
+                className="w-1.5 h-1.5 rounded-full bg-current animate-bounce"
+                style={{ animationDelay: `${i * 150}ms` }}
+              />
+            ))}
+            <span className="text-xs ml-1">Working…</span>
+          </div>
+        ) : subagent.status === "error" ? (
+          // The snapshot carries the actual message; a generic sentence wastes it.
+          <p className="text-xs text-error m-0">{subagent.error ?? "This subagent failed."}</p>
+        ) : (
+          // Re-opening a finished card remounts the selector hooks on a namespace whose
+          // events are long past, so the scoped stream can come back empty. The
+          // snapshot's own output is the fallback.
+          <SubagentOutput output={subagent.output} />
+        ))}
     </div>
   );
+}
+
+/** `SubagentDiscoverySnapshot.output` is typed `unknown`, so never render it as text. */
+function SubagentOutput({ output }: { output: unknown }) {
+  if (output == null) return null;
+  if (typeof output === "string") {
+    return (
+      <div className="text-sm text-text-secondary">
+        <Markdown>{output}</Markdown>
+      </div>
+    );
+  }
+  return <JsonViewer data={output} />;
 }

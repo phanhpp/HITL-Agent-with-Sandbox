@@ -8,6 +8,13 @@ const PAGES = [
     blurb: "The agent proposes sending an email and stops. You approve, edit, or reject it.",
     shows: ["interrupt / resume", "branching: edit & retry", "rejoin after reload", "stop a run"],
   },
+  {
+    href: "/orchestrate",
+    title: "Orchestrate",
+    blurb:
+      "A deep agent writes a plan, delegates each step to a specialist, and synthesises the result.",
+    shows: ["live todo list", "subagent cards", "extended thinking", "approval on file writes"],
+  },
 ];
 
 export default function Home() {

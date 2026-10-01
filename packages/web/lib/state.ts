@@ -32,13 +32,20 @@ export interface AgentState {
 }
 
 /**
- * Used by /orchestrate. `todos` comes from the planning middleware, which is
- * opt-in as of deepagents v0.7 — so the key is absent rather than empty when it
- * is off. Always read it as `stream.values?.todos ?? []`.
+ * Used by /orchestrate. Both extra keys were confirmed against a live thread, not
+ * taken from a schema — `GET /assistants/<id>/schemas` reports only
+ * `{files, messages}`, so `todos` cannot be discovered that way.
  *
- * TODO(step 6): confirm the field name against the server's schema once
- * deepagents is installed, and add the sandbox file state if the panel needs it.
+ * `todos` comes from TodoListMiddleware, which is opt-in as of deepagents 0.7: with
+ * the middleware off the key is absent rather than empty, and the model is told to
+ * skip planning for simple requests even when it is on. So an empty panel is a
+ * correct state. Always read `stream.values?.todos ?? []`.
+ *
+ * `files` is the StateBackend filesystem. Because it lives in graph state, the file
+ * panel is a plain `stream.values` read — no HTTP route and no sandbox. A sandbox
+ * backend would NOT populate this (docs/deepagent-guide.md section 8.14).
  */
 export interface DeepAgentState extends AgentState {
   todos?: Todo[];
+  files?: Record<string, string>;
 }

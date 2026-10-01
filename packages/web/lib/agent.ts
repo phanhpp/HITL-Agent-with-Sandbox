@@ -36,4 +36,5 @@ export function resolveAgentUrl(): string {
  */
 export const ASSISTANTS = {
   approve: "human_in_the_loop",
+  orchestrate: "orchestrator",
 } as const;
