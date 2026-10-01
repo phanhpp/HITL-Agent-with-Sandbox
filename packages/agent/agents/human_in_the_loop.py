@@ -5,7 +5,7 @@ from langchain.agents.middleware import HumanInTheLoopMiddleware
 from tools.email import send_email
 
 agent = create_agent(
-    model=init_chat_model("anthropic:claude-sonnet-5-5"),
+    model=init_chat_model("anthropic:claude-haiku-4-5"),
     tools=[send_email],
     system_prompt=(
         "Every email you send is reviewed by the user first. They may approve it, "
