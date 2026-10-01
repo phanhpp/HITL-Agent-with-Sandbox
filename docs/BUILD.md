@@ -449,6 +449,46 @@ while the server held a full reply.
 
 ---
 
+## Deferred: rejoin polish
+
+Our rejoin works, but the official `join-rejoin` pattern does three things we do not.
+Recorded here in case we want them later — none is required for anything else.
+
+**1. Keep the transcript visible while disconnected.** Ours blanks the screen and shows
+only a Rejoin button, so the conversation appears to vanish at the exact moment the agent
+is still working. Theirs snapshots the messages first and renders them read-only:
+
+```tsx
+const handleDisconnect = (messages) => {
+  setFrozenMessages(messages);   // capture before the stream dies
+  setConnected(false);
+};
+// then: <MessageList messages={frozenMessages} /> + a banner
+//       "Stream disconnected — agent may still be running"
+```
+
+Wrinkle: `ChatShell` outlives the stream, so the messages have to be passed up —
+`onLeave(messages)` rather than `onLeave()`. An upward pass, but unavoidable here; the
+official pattern does the same.
+
+**2. A connection indicator** — a green/red dot with `Connected` / `Disconnected` in the
+header bar that already exists.
+
+**3. Show Leave only while `isLoading`.** Leaving when nothing is running does nothing
+useful — "New conversation" is the action wanted then. Same reasoning already applied to
+Stop.
+
+**What we already match:** synchronous storage read, `key={mountKey}` remount on rejoin,
+shell owns `threadId` while the child owns `useStream`, New conversation clears storage.
+
+**What we deliberately do differently:** we use `localStorage` (survives tab close) where
+they use `sessionStorage`; and we keep Leave inside the chat rather than using their
+`onControlsChange` effect to hoist controls into the header.
+
+Reference: `/Users/dangphuonganh/dev/join-rejoin/packages/frontend/src/patterns/join-rejoin/preview.tsx`
+
+---
+
 ## Not built yet
 
 - `GUIDE.md` 8.2 — message queue
