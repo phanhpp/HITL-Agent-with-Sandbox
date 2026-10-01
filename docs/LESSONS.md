@@ -120,6 +120,55 @@ curl -s localhost:2024/assistants/<id>/schemas | python3 -m json.tool
 
 ---
 
+## Reasoning (extended thinking)
+
+**The config depends on the model, and the wrong one fails two different ways.**
+
+| Model | `thinking=` |
+|---|---|
+| Haiku 4.5, and anything pre-4.7 | `{"type": "enabled", "budget_tokens": 2000}` |
+| Sonnet 5, Opus 4.7+, Opus 5, Opus 5.5 | `{"type": "adaptive", "display": "summarized"}` |
+
+- **Loud failure:** the budget form on a new model is a hard 400 — *"thinking.type.enabled is not supported for this model"*. `budget_tokens` was removed there; use `output_config.effort` (or `reasoning_effort=`) to control effort instead.
+- **Silent failure:** on adaptive models `display` defaults to **`"omitted"`**. Leave it out and the call succeeds, costs the same, and returns **no reasoning blocks at all** — the UI just never shows a thinking bubble.
+- With the budget form, **`max_tokens` must exceed `budget_tokens`**.
+- Opus 5 / Sonnet 5 have adaptive thinking **on by default**; `{"type": "disabled"}` turns it off (Opus 5: only at `"high"` effort or below; Opus 5.5: cannot be disabled at all).
+
+**Do not infer the form from the model name.** The real boundary is "pre-4.7" vs "4.6+" vs "4.7+", which no substring matches cleanly — Opus 4.6 takes `adaptive` but not `summarized`. Spell each model out:
+
+```python
+def _supervisor_model():                       # Sonnet 5
+    return init_chat_model("anthropic:claude-sonnet-5",
+        thinking={"type": "adaptive", "display": "summarized"}, max_tokens=8000)
+
+def _worker_model():                           # Haiku 4.5
+    return init_chat_model("anthropic:claude-haiku-4-5",
+        thinking={"type": "enabled", "budget_tokens": 2000}, max_tokens=8000)
+```
+
+**The block is named differently depending on where you read it.**
+
+| Where | Type |
+|---|---|
+| raw `content` — the wire, `/threads/{id}/state` | `thinking` |
+| normalized `contentBlocks` | **`reasoning`** |
+
+- Filtering raw `content` for `"reasoning"` silently matches nothing. Read `contentBlocks`.
+- **`message.text` EXCLUDES reasoning** — it keeps only `type: "text"` blocks. A component rendering `msg.text` drops the whole thought process with no error.
+- `redacted_thinking` normalizes to `non_standard`, not `reasoning`, so it is filtered out. Render nothing rather than a "reasoning hidden" notice.
+
+```ts
+// one helper, because both traps live here — packages/web/lib/reasoning.ts
+message.contentBlocks
+  .filter((b) => b.type === "reasoning")
+  .map((b) => b.reasoning)
+  .join("");
+```
+
+**Verify with a probe, not the docs.** All of the above was settled by one call per config and printing `r.content_blocks` types — expect `['reasoning', 'text']`. It also works alongside tools and interrupts: a run paused on an approval, resumed, and wrote its file with reasoning intact.
+
+---
+
 ## Chat UI
 
 ### The client's message list goes stale — and nothing can force a re-read
