@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import {
   useMessageMetadata,
   useStream,
@@ -16,7 +16,8 @@ import type { ChatShellRenderProps } from "@/components/ChatShell";
 import { ApprovalCard } from "@/components/ApprovalCard";
 import { ToolCallCard } from "@/components/ToolCallCard";
 import { ForkControls, MessageEditor, useFork } from "@/components/ForkControls";
-import { forkPointForMessage, useCheckpoints } from "@/lib/use-checkpoints";
+import { useBranching, type BranchInfo } from "@/lib/use-branching";
+import { BranchSwitcher } from "@/components/BranchSwitcher";
 import { useStopRun } from "@/lib/use-stop-run";
 import { StopIcon } from "@/components/icons";
 import {
@@ -48,13 +49,13 @@ export function ApproveChat({ threadId, onThreadId, onLeave, reconnect }: ChatSh
     onThreadId,
   });
 
-  const { messages, isLoading } = stream;
+  const { isLoading } = stream;
   const hitl = useHitl(stream);
 
-  // One history fetch per thread, refreshed when a run ends. Each message's fork
-  // point is derived from this rather than from per-message metadata, which is
-  // undefined here — see lib/use-checkpoints.ts.
-  const checkpoints = useCheckpoints(stream, threadId);
+  // Fork points, branch info and the branch tip. See lib/use-branching.ts.
+  const branching = useBranching(stream, threadId);
+  // Branch history when idle, live stream while running. See lib/use-branching.ts.
+  const messages = branching.selectMessages(stream.messages);
   const { stopRun, isStopping } = useStopRun(stream, threadId);
   const pending = hitl.requests.length > 0;
   const hasMessages = messages.length > 0;
@@ -97,25 +98,15 @@ export function ApproveChat({ threadId, onThreadId, onLeave, reconnect }: ChatSh
     ) : null;
 
   const submit = (text: string) => {
-    void stream.submit({ messages: [new HumanMessage(text)] });
+    // Anchor to the tip of the branch on screen. Without this the SDK appends to the
+    // thread's "latest" checkpoint, so after switching branches a new message would
+    // silently jump back to the newest one.
+    const tip = branching.branchTipCheckpointId;
+    void stream.submit(
+      { messages: [new HumanMessage(text)] },
+      tip != null ? { forkFrom: tip } : undefined,
+    );
   };
-
-  /*
-   * A fork starts a new branch, and the server thread then holds only that branch. The
-   * client does not know this: it keeps the messages it already streamed, so the
-   * replaced reply lingers below the new one. There is no public re-hydrate, so rebuild
-   * the chat once the forked run finishes and let it read the thread fresh.
-   *
-   * Waiting for isLoading to fall matters — remounting mid-stream would drop the run
-   * we just started.
-   */
-  const [forkPending, setForkPending] = useState(false);
-  useEffect(() => {
-    if (forkPending && !isLoading) {
-      setForkPending(false);
-      reconnect();
-    }
-  }, [forkPending, isLoading, reconnect]);
 
   return (
     <ChatContainer
@@ -184,10 +175,9 @@ export function ApproveChat({ threadId, onThreadId, onLeave, reconnect }: ChatSh
           <MessageRow
             stream={stream}
             message={message}
-            // The checkpoint holding exactly `index` messages is the state just
-            // before this one existed, so resuming from it replays this turn.
-            forkFrom={forkPointForMessage(checkpoints, index)}
-            onFork={() => setForkPending(true)}
+            branchInfo={branching.metadataFor(message.id)}
+            activeBranch={branching.activeBranch}
+            onSwitchBranch={branching.switchBranch}
           />
           {index === pendingIndex && approvalCards}
         </Fragment>
@@ -205,15 +195,18 @@ export function ApproveChat({ threadId, onThreadId, onLeave, reconnect }: ChatSh
 function MessageRow({
   stream,
   message,
-  forkFrom,
-  onFork,
+  branchInfo,
+  activeBranch,
+  onSwitchBranch,
 }: {
   stream: AnyStream;
   message: BaseMessage;
-  forkFrom: string | undefined;
-  /** Tells the page a branch was started, so it can rebuild once the run ends. */
-  onFork: () => void;
+  branchInfo: BranchInfo;
+  activeBranch: string;
+  onSwitchBranch: (branch: string) => void;
 }) {
+  const forkFrom = branchInfo.parentCheckpointId;
+  const siblings = branchInfo.siblingBranches;
   const optimisticStatus = useMessageMetadata(stream, message.id)?.optimisticStatus;
   const fork = useFork(stream);
   const [isEditing, setIsEditing] = useState(false);
@@ -231,6 +224,17 @@ function MessageRow({
     return ids.size ? stream.toolCalls.filter((tc) => ids.has(tc.callId)) : [];
   }, [stream.toolCalls, message]);
 
+  const switcher = siblings && siblings.length > 1 && (
+    <div className="flex justify-center my-2">
+      <BranchSwitcher
+        siblingBranches={siblings}
+        currentBranch={branchInfo.branch ?? activeBranch}
+        onSwitch={onSwitchBranch}
+        disabled={stream.isLoading}
+      />
+    </div>
+  );
+
   if (HumanMessage.isInstance(message)) {
     if (isEditing && forkFrom) {
       return (
@@ -239,7 +243,6 @@ function MessageRow({
           onCancel={() => setIsEditing(false)}
           onSave={(text) => {
             setIsEditing(false);
-            onFork();
             fork.editAndRerun(forkFrom, text);
           }}
         />
@@ -248,6 +251,7 @@ function MessageRow({
 
     return (
       <div className="group" style={{ opacity: optimisticStatus === "pending" ? 0.6 : 1 }}>
+        {switcher}
         <HumanBubble>
           <Markdown>{message.text}</Markdown>
         </HumanBubble>
@@ -278,6 +282,7 @@ function MessageRow({
     if (!text && toolCalls.length === 0) return null;
     return (
       <div className="group space-y-2">
+        {switcher}
         {text && (
           <AIBubble>
             <Markdown>{text}</Markdown>
@@ -288,9 +293,7 @@ function MessageRow({
             canEdit={false}
             disabled={forkDisabled}
             onRegenerate={() => {
-              if (!forkFrom) return;
-              onFork();
-              fork.regenerate(forkFrom);
+              if (forkFrom) fork.regenerate(forkFrom);
             }}
           />
         )}

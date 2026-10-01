@@ -19,13 +19,15 @@ import { PencilIcon, RefreshIcon } from "./icons";
 /*
  * There is deliberately no useForkFrom() here.
  *
- * The obvious source is `useMessageMetadata(stream, id)?.parentCheckpointId`, which is
- * what GUIDE.md 8.1 uses — but it is documented as undefined "when the message was
- * observed without a paired checkpoint envelope", and in this setup it is undefined for
- * every message, reload or not. Gating these buttons on it disabled them permanently.
+ * GUIDE.md 8.1 reads `useMessageMetadata(stream, id)?.parentCheckpointId`, which is
+ * undefined for every message here, so gating the buttons on it disabled them forever.
+ * The reason is the stream config, not a missing checkpointer: `checkpoints` is a
+ * protocol channel that the default stream modes do not subscribe to, so no message
+ * ever arrives paired with a checkpoint envelope.
  *
- * Fork points come from `lib/use-checkpoints.ts` instead, which reads
- * threads.getHistory(). Callers pass `forkFrom` down as a prop.
+ * `lib/use-branching.ts` subscribes to that channel and reads threads.getHistory(),
+ * where every state carries `parent_checkpoint` — the exact fork point. Callers pass
+ * the resulting `forkFrom` down as a prop.
  */
 
 /**

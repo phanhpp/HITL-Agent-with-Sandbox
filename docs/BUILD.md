@@ -345,9 +345,11 @@ by the time you can click it. It earns its place where runs take minutes.
 
 ---
 
-## 8. Branching: Edit and Retry
+## 8. Branching: Edit, Retry, and the branch switcher
 
-**Files:** `lib/use-checkpoints.ts`, `components/ForkControls.tsx` — `GUIDE.md` 8.1
+**Files:** `lib/use-branching.ts`, `components/BranchSwitcher.tsx`,
+`components/ForkControls.tsx` — `GUIDE.md` 8.1, and the official `branching-chat`
+pattern
 
 Both re-run the graph from a point in the past:
 
@@ -358,48 +360,91 @@ Both need one thing: the checkpoint id to restart from.
 
 ### Where the id comes from
 
-`GUIDE.md` uses `useMessageMetadata(…).parentCheckpointId`. **That is undefined here for
-every message**, which silently disables both buttons.
+`GUIDE.md` uses `useMessageMetadata(…).parentCheckpointId`. That is undefined here for
+every message, which silently disables both buttons.
 
-Not a missing checkpointer — checkpoints exist. The stream simply never says which
-checkpoint each message belongs to; its events carry no `checkpoint_id` at all.
+The reason is the **stream config**, not a missing checkpointer. `useStream` can only
+fill that field when a message arrives paired with a checkpoint envelope, and
+`checkpoints` is a protocol channel the default stream modes never subscribe to. So the
+hook subscribes to it directly:
 
-So the id comes from the thread's timeline instead:
-
-```
-checkpoint_id     #msgs  next step
-…eff1fa1fe0a4         4  done
-…f3238d77dc57         3  model
-…365493e02c1d         2  __start__
-…260a0fc879f5         0  __start__     ← oldest
+```ts
+// lib/use-branching.ts:52
+const checkpointEvents = useChannel(stream, ["checkpoints"], undefined, { replay: false });
 ```
 
-To re-run **message #3**: find the checkpoint where the thread had exactly **2**
-messages — the state just before it existed — and pass that id as `forkFrom`.
+That covers the live run. The durable source is `threads.getHistory()`, where **every
+state carries `parent_checkpoint`** — the exact checkpoint from just before that state:
+
+```ts
+// lib/use-branching.ts:143
+const parentCheckpointId = state.parent_checkpoint?.checkpoint_id;
+```
+
+An earlier version of this file matched on message count instead. That is a heuristic
+needing both an off-by-one rule and a tie-break, and it fails silently. The real pointer
+was in the payload all along.
+
+### Turning a flat list into a tree
+
+`getBranchContext(activeBranch, history)` from `@langchain/langgraph-sdk/ui` is a pure
+function over the checkpoint list — it fetches nothing.
+
+| gives you | what it is |
+|---|---|
+| `flatHistory` | states on the active branch, **oldest first** |
+| `threadHead` | `flatHistory.at(-1)` — the branch tip |
+| `branchByCheckpoint` | checkpoint → `{ branch, branchOptions }` |
+| `branchTree` | the whole fork tree |
+
+`branchOptions.length > 1` is what makes `BranchSwitcher` render `‹ Branch 1/2 ›`; it
+returns `null` otherwise, so an unforked thread shows no control.
+
+### Two things that are easy to miss
+
+**Switching branches has to change the transcript.** `stream.messages` is one lineage —
+whatever was streamed last — and does not follow `activeBranch`. Without this the
+switcher moves and the text does not:
+
+```ts
+// lib/use-branching.ts:208
+selectMessages: (streamMessages) =>
+  stream.isLoading || branchMessages.length === 0 ? streamMessages : branchMessages,
+```
+
+Live messages while streaming, branch history when idle. Using history mid-run would
+freeze the transcript until the next refresh.
+
+**New messages have to be anchored to the branch on screen.** `submit(input)` appends to
+the thread's *latest* checkpoint, so sending from an older branch silently jumps to the
+newest one:
+
+```tsx
+// ApproveChat.tsx:104
+const tip = branching.branchTipCheckpointId;
+void stream.submit({ messages: [new HumanMessage(text)] }, tip != null ? { forkFrom: tip } : undefined);
+```
 
 ### A fork branches, it does not delete
 
 `submit(input, { forkFrom })` moves the thread to a new branch. The old messages stay in
 `getHistory()`; they just stop appearing in `/state`.
 
-Verified: after forking, `/state` had 2 messages while history still held all 10
-checkpoints including the dropped branch. That history is what a `< 1/2 >` switcher
-would read — v1 ships none.
+A consequence worth knowing before you debug it: **`/state` and the UI can legitimately
+disagree.** `/state` returns the thread head; the UI shows the branch you are on. Dump
+the history tree before assuming the client is stale.
 
-### The client does not notice
+Deriving the transcript from branch history also removed the workaround that used to
+live here — a `reconnect()` remount after every fork, to stop the replaced reply
+lingering below the new one. The view now matches the server on its own. The remount
+survives for Stop only (§7), where the client really does hold state the server has
+discarded.
 
-After a fork the server holds one branch, but the browser keeps the messages it already
-streamed, so the replaced reply lingers. The page rebuilds the chat once the run
-finishes:
+### Known rough edge
 
-```tsx
-// ApproveChat.tsx:113-118
-useEffect(() => {
-  if (forkPending && !isLoading) { setForkPending(false); reconnect(); }
-}, [forkPending, isLoading, reconnect]);
-```
-
-Waiting for `isLoading` to fall matters — rebuilding mid-stream would drop the run.
+Reloading lands on the SDK's default branch, not the one you were viewing —
+`activeBranch` is component state and nothing persists it. The official pattern behaves
+the same way. Nothing is lost; the switcher gets you back.
 
 ---
 
@@ -411,14 +456,15 @@ Waiting for `isLoading` to fall matters — rebuilding mid-stream would drop the
 | `app/layout.tsx` | 36 | Nav + `h-dvh flex flex-col` shell |
 | `app/approve/page.tsx` | 11 | Server wrapper, exports `metadata` |
 | `features/approve/ApproveClient.tsx` | 23 | `dynamic(ssr:false)` boundary (§3) |
-| `features/approve/ApproveChat.tsx` | 310 | The page: `useStream`, messages, cards |
+| `features/approve/ApproveChat.tsx` | 313 | The page: `useStream`, messages, cards |
 | `components/ChatShell.tsx` | 138 | Thread id, rejoin, remount (§4) |
 | `components/ApprovalCard.tsx` | 302 | Approve / edit / reject UI |
 | `components/ToolCallCard.tsx` | 58 | Tool call + result (§6) |
-| `components/ForkControls.tsx` | 152 | Edit / Retry buttons + editor (§8) |
+| `components/ForkControls.tsx` | 154 | Edit / Retry buttons + editor (§8) |
 | `lib/use-hitl.ts` | 117 | Decisions, both interrupt locations (§5) |
 | `lib/use-stop-run.ts` | 75 | Real cancel + close the turn (§7) |
-| `lib/use-checkpoints.ts` | 75 | History → fork points (§8) |
+| `lib/use-branching.ts` | 212 | History → fork points, branch tree (§8) |
+| `components/BranchSwitcher.tsx` | 50 | `‹ Branch 1/2 ›` control (§8) |
 | `lib/agent.ts` | 41 | SSR-safe URL, graph names |
 | `lib/state.ts` | 45 | `AgentState` for `useStream<T>` |
 

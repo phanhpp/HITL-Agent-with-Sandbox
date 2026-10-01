@@ -184,37 +184,64 @@ checkpoint_id     #msgs  next step
 …260a0fc879f5         0  __start__      ← oldest
 ```
 
-**`parentCheckpointId` is undefined — and it is NOT a missing checkpointer.**
-- Checkpoints exist: `getHistory()` returns 8 of them for the thread above.
-- But the stream never says which checkpoint each message belongs to. Every event during a run:
-
-```
-event: metadata
-event: values          ← lines mentioning checkpoint_id: 0
-```
-
-- `useStream` can only fill `parentCheckpointId` when a message arrives paired with a checkpoint. No pairing on the wire → undefined for every message.
+**`parentCheckpointId` is undefined — the cause is the stream config, not a missing checkpointer.**
+- Checkpoints exist: `getHistory()` returns 15 for a thread with one fork.
+- `useStream` can only fill it when a message arrives **paired with a checkpoint envelope**.
+- `checkpoints` is a protocol channel, and the **default stream modes do not subscribe to it** — so no pairing ever reaches the client.
 - Symptom: Edit and Retry permanently disabled, nothing in the console.
+- Fix: subscribe explicitly.
 
-**Use the `#msgs` column instead.** To Edit or Retry **message #3**:
+```ts
+useChannel(stream, ["checkpoints"], undefined, { replay: false })
+```
 
-1. Find the checkpoint where the thread had exactly **2** messages (`id_002`). That is the state just *before* message #3 was created.
-2. Pass `forkFrom: "id_002"` to `submit`.
-3. The server rewinds to `id_002` and re-runs the LLM from there.
+**The exact fork point is already in history — do not count messages.**
+- Every `ThreadState` carries `parent_checkpoint`.
+- For a message: find the oldest state whose `values.messages` contains it; that state's `parent_checkpoint.checkpoint_id` is the checkpoint from just before the message existed. Pass it as `forkFrom`.
+- The earlier version of this file told you to match on message count instead. That needs an off-by-one rule *and* a tie-break, and both fail silently — wrong turn re-run, no error.
 
-Three details to get right. All fail **silently** — no error, just the wrong turn re-run:
+**`getBranchContext(activeBranch, history)`** — from `@langchain/langgraph-sdk/ui`. Pure function over the checkpoint list, fetches nothing.
 
-- **Off by one.** Message **#3** is array index **2**, and you want the checkpoint with **2** messages. Count from the array index, not the human-readable position.
-- **Last match wins.** Several checkpoints can share a message count within one step. Take the newest — the closest point before the next message is written. Taking the first forks a step too early.
-- **Fetch history once per thread**, in an effect keyed on `[threadId, stream.isLoading, stream.client]`. `isLoading` in the deps refreshes it when a run *ends*, not on every streamed token.
+| gives you | what it is |
+|---|---|
+| `flatHistory` | states on the active branch, **oldest first** |
+| `threadHead` | `flatHistory.at(-1)` — the branch tip |
+| `branchByCheckpoint` | checkpoint → `{ branch, branchOptions }`; `branchOptions.length > 1` means show a `‹ 1/2 ›` switcher |
+| `branchTree` | the whole fork tree |
 
-Implemented in `packages/web/lib/use-checkpoints.ts`.
+**Switching branches must change the transcript too.**
+- `stream.messages` is a single lineage — whatever was streamed last. It does **not** follow `activeBranch`.
+- Render `threadHead.values.messages` when idle; keep `stream.messages` while `isLoading`, or the transcript freezes mid-reply.
+- Symptom when missed: the switcher moves and the text does not.
+
+**Anchor new messages to the branch on screen.**
+- `submit(input)` with no options appends to the thread's **latest** checkpoint.
+- So viewing an older branch and sending silently jumps the turn to the newest one.
+- Pass `{ forkFrom: threadHead.checkpoint.checkpoint_id }`.
+- Verified: on a branch whose story had the dog chasing squirrels, "what was the dog chasing?" answered "squirrels" — the other branch had no chasing in it.
+
+**Refresh history when a run ENDS, not per token.** Edge-trigger it:
+
+```ts
+const wasLoading = useRef(false);
+useEffect(() => {
+  if (wasLoading.current && !stream.isLoading) void refreshHistory();
+  wasLoading.current = stream.isLoading;
+}, [stream.isLoading, refreshHistory]);
+```
+
+**Deriving messages from history removes the remount-after-fork workaround.**
+- Previously a fork left the replaced reply lingering below the new one, fixed by remounting the chat.
+- Once the transcript comes from branch history, it already matches the server. Keep the remount for Stop only.
+
+**Reload lands on the SDK's default branch**, not the one you were viewing — `activeBranch` is component state and nothing persists it. Shared with the official pattern.
+
+Implemented in `packages/web/lib/use-branching.ts`.
 
 **A fork branches, it does not delete.**
 - `submit(input, { forkFrom })` moves the thread to a new branch.
 - Old messages stay in `getHistory()`, they just stop appearing in `/state`.
-- Verified: after forking, `/state` had 2 messages while history still held all 10 checkpoints including the dropped branch.
-- That history is also what a `< 1/2 >` branch switcher would read. v1 ships no built-in one.
+- So `/state` and the UI can legitimately disagree: `/state` is the thread head, the UI is the branch you are on. Not a bug — check the history tree before chasing it.
 
 **The same data gives you time travel (8.4) almost free.**
 - List the checkpoints, show `cp.next.join(", ") || "done"` and the message count.
