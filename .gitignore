@@ -21,6 +21,9 @@ packages/agent/.langgraph_api/
 *.swp
 .idea/
 
+# Personal notes stay local. The four curated docs are tracked anyway, force-added
+# once with `git add -f`:  BUILD.md  LESSONS.md  TESTING.md  deepagent_subagent.md
+# `git add docs/` will NOT pick up a new file here -- use -f if you mean to track it.
 docs/
 # TypeScript build cache
 *.tsbuildinfo
