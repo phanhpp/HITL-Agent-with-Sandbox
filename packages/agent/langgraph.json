@@ -1,7 +1,8 @@
 {
   "python_version": "3.12",
   "graphs": {
-    "human_in_the_loop": "./agents/human_in_the_loop.py:agent"
+    "human_in_the_loop": "./agents/human_in_the_loop.py:agent",
+    "orchestrator": "./agents/orchestrator.py:agent"
   },
   "env": ".env",
   "source": {
