@@ -348,121 +348,48 @@ by the time you can click it. It earns its place where runs take minutes.
 ## 8. Branching: Edit, Retry, and the branch switcher
 
 **Files:** `lib/use-branching.ts`, `components/BranchSwitcher.tsx`,
-`components/ForkControls.tsx` — `GUIDE.md` 8.1, plus the official `branching-chat`
-pattern
+`components/ForkControls.tsx` — `GUIDE.md` 8.1
 
-Edit and Retry both re-run the graph from a point in the past:
+Edit re-runs from just before your message; Retry re-runs the same turn. Both need one
+thing: **the checkpoint id to restart from**.
 
-- **Edit** — change your message, re-run from just before it.
-- **Retry** — re-run the same turn unchanged.
+### 8.1 Where checkpoints come from
 
-Each needs exactly one input: **the id of the checkpoint to restart from**. Everything
-below exists to produce that id, and then to make a forked thread navigable.
-
-### 8.1 Why `parentCheckpointId` is undefined
-
-`GUIDE.md` 8.1 reads the fork point straight off the message:
-
-```ts
-useMessageMetadata(stream, msg.id)?.parentCheckpointId
-```
-
-Here that is `undefined` for **every** message, so both buttons sit permanently
-disabled with nothing in the console.
-
-It is not a missing checkpointer — checkpoints exist, and `getHistory()` returns 15 of
-them for a thread with one fork. The cause is narrower:
-
-- `useStream` can only fill that field when a message arrives **paired with a checkpoint
-  envelope**.
-- Pairing comes from the `checkpoints` stream channel.
-- `checkpoints` is **not in the default stream modes**, so it never arrives.
-
-Two ways out: subscribe to the channel, or read the checkpoints yourself. This repo does
-both, because they are good at different things.
-
-### 8.2 Three sources, and why each one is needed
+`GUIDE.md` reads `useMessageMetadata(…)?.parentCheckpointId`. It is `undefined` for
+every message here, so both buttons sit disabled. Not a missing checkpointer —
+`checkpoints` is a stream channel that is **not in the default stream modes**, so no
+message ever arrives paired with one.
 
 | Source | Gives | Updates |
 |---|---|---|
-| `stream.messages` | the text on screen | every streamed token |
 | `threads.getHistory()` | full states, each with `parent_checkpoint` | only when we ask |
-| `useChannel(["checkpoints"])` | ids of checkpoints being written **right now** | during a run |
+| `useChannel(["checkpoints"])` | live ids, `{ id, parent_id }` only | during a run |
 
-Why not `getHistory()` alone:
+Both are needed. History is the only source with `parent_checkpoint`, but refetching per
+token would be a request per token — so it refreshes **when a run ends**
+(`lib/use-branching.ts:70`), which leaves a whole reply's worth of staleness. The
+channel (`:52`) covers that window.
 
-- It is the **only** source carrying `parent_checkpoint`, so the fork point must come
-  from it.
-- But refetching per token would be a request per token.
-- So it is refreshed **when a run ends** — which leaves the whole duration of a reply
-  with a stale tree.
+### 8.2 Merging live events into history
 
-Why not the channel alone:
-
-- Channel events carry `{ id, parent_id }` and nothing else. No messages, no state.
-- Enough to know a fork happened; not enough to render it.
-
-They cover each other's gap. The channel is the live edge, history is the durable truth.
-
-```ts
-// lib/use-branching.ts:52 — the channel is opt-in; this is the subscription
-const checkpointEvents = useChannel(stream, ["checkpoints"], undefined, {
-  replay: false,          // ids already in getHistory would arrive twice
-});
-```
-
-```ts
-// lib/use-branching.ts:70 — edge-triggered: fire when a run ENDS, not per token
-const wasLoading = useRef(false);
-useEffect(() => {
-  if (wasLoading.current && !stream.isLoading) void refreshHistory();
-  wasLoading.current = stream.isLoading;
-}, [stream.isLoading, refreshHistory]);
-```
-
-`stream.isLoading` in a dependency array is the trick: compare it to its previous value
-and you get a "run finished" event out of a boolean.
-
-### 8.3 Merging live events into history
-
-`getBranchContext()` needs **one list of checkpoints, newest first**. `getHistory()`
-only updates when a run finishes, so live events from `useChannel` are turned into
-temporary **synthetic states** and merged with the server's records.
-
-Four steps — `lib/use-branching.ts:86`:
+`getBranchContext()` takes **one list, newest first**. Live ids become temporary
+**synthetic states** and are merged with the server's records — `lib/use-branching.ts:86`:
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  1. Index server history                                    │
-│     Store every history state in a Map, keyed by            │
-│     checkpoint_id.                                          │
-└──────────────────────────────┬──────────────────────────────┘
-                               ▼
-┌─────────────────────────────────────────────────────────────┐
-│  2. Deduplicate live events                                 │
-│     Loop the channel events. Skip any id already in the Map.│
-└──────────────────────────────┬──────────────────────────────┘
-                               ▼
-┌─────────────────────────────────────────────────────────────┐
-│  3. Build synthetic states                                  │
-│     Turn each new id into a bare ThreadState — ids only,    │
-│     values: {}. unshift onto the synthetic array.           │
-└──────────────────────────────┬──────────────────────────────┘
-                               ▼
-┌─────────────────────────────────────────────────────────────┐
-│  4. Combine                                                 │
-│     return [...synthetic, ...history]                       │
-└─────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────┐
+│ 1. Index server history in a Map, keyed by checkpoint_id  │
+└─────────────────────────────┬─────────────────────────────┘
+┌─────────────────────────────▼─────────────────────────────┐
+│ 2. Loop channel events. Skip any id already in the Map    │
+└─────────────────────────────┬─────────────────────────────┘
+┌─────────────────────────────▼─────────────────────────────┐
+│ 3. Turn each new id into a bare state: ids only, values:{}│
+│    unshift it, so live stays newest-first like history    │
+└─────────────────────────────┬─────────────────────────────┘
+┌─────────────────────────────▼─────────────────────────────┐
+│ 4. return [...synthetic, ...history]                      │
+└───────────────────────────────────────────────────────────┘
 ```
-
-A channel event carries `{ id, parent_id }` and nothing else, which is why a synthetic
-state can only ever hold ids.
-
-#### The merged array in action
-
-`unshift` prepends each live event as it arrives, so the synthetic half ends up in the
-same newest-first order `getHistory()` uses — which is what lets step 4 plainly
-concatenate:
 
 ```
 [LIVE SYNTHETIC]  cp_21d0aa ──► parent: cp_347745   values: {}
@@ -472,41 +399,26 @@ concatenate:
 [SERVER HISTORY]  cp_946419 ──► parent: NONE        0 messages
 ```
 
-The two halves are not matched by position or timestamp. They join because the oldest
-synthetic state's `parent_id` is a checkpoint history already holds. Parent pointers
-make it one unbroken chain, and `getBranchContext` walks it without knowing which state
-came from where.
+The halves are not matched by position or time. They join because the oldest synthetic
+state's `parent_id` is a checkpoint history already holds — parent pointers make it one
+chain.
 
-#### Self-healing
+**Self-healing.** When the run ends, `refreshHistory()` returns those ids as real states
+with messages; step 2 then skips them and the synthetic copies vanish.
 
-When the run completes, `refreshHistory()` refetches from the server (§8.2) and
-`cp_347745` and `cp_21d0aa` come back as real states with messages. Step 2 now finds
-them in the Map and skips them, so the synthetic copies vanish on their own.
+**Why `values: {}` is fine, and where it isn't.** The tree builder reads only
+`checkpoint` and `parent_checkpoint`, so a switcher appears while the agent is still
+typing. But anything reading messages must skip them — `branchMessages` scans back for
+the newest state with a **non-empty** `messages` array (`:181`), or the transcript
+blanks mid-run.
 
-They exist only between "the server wrote this checkpoint" and "we refetched" — exactly
-the window the channel exists to cover.
+### 8.3 How fork points are derived
 
-#### Two consequences of `values: {}`
-
-| | |
-|---|---|
-| **Good for the tree** | `getBranchContext` reads only `checkpoint` and `parent_checkpoint`, so a `‹ 1/2 ›` switcher appears while the agent is still typing. |
-| **Must be skipped for messages** | Synthetic states hold no message content. `branchMessages` scans back for the newest state with a **non-empty** `messages` array (`lib/use-branching.ts:181`); taking the tip blindly would blank the transcript mid-run. |
-
-### 8.4 How fork points are derived
-
-To Edit or Retry a message you must pass its exact rewind checkpoint id as `forkFrom`.
-
-**The logic** — `lib/use-branching.ts:132`:
-
-1. Walk history **oldest → newest** to find the first snapshot in which the message
-   appears. `getHistory()` returns newest-first, so that means iterating from the end of
-   the array: `for (let i = history.length - 1; i >= 0; i -= 1)`.
+1. Walk history **oldest → newest** for the first snapshot the message appears in.
+   `getHistory()` is newest-first, so that means iterating from the end of the array
+   (`lib/use-branching.ts:132`).
 2. Read that snapshot's `parent_checkpoint.checkpoint_id`.
-3. That parent is the conversation exactly as it stood **just before the message
-   existed**.
-
-**Real example** — the first three checkpoints of a live thread:
+3. That parent is the conversation **just before the message existed**.
 
 ```
 Snapshot      Parent        Messages in snapshot
@@ -516,118 +428,62 @@ cp_e7ce15     cp_946419     1  — human prompt
 cp_06cdd9     cp_e7ce15     2  — human prompt + AI reply
 ```
 
-- The AI reply first appears in `cp_06cdd9`.
-- Its `parent_checkpoint` is `cp_e7ce15` — the state holding only the question.
-- Retry on that reply submits `forkFrom: "cp_e7ce15"`, and the server rewinds there and
-  generates a new reply.
+The AI reply first appears in `cp_06cdd9`, whose parent is `cp_e7ce15` — the state
+holding only the question. Retry submits `forkFrom: "cp_e7ce15"`.
 
-**Why it matters.** The previous version of this code counted messages to guess the
-fork point. That needs an off-by-one rule (message #3 is index 2, so look for the
-snapshot with 2 messages) *and* a tie-break (several snapshots share a count within one
-step; the newest is the right one). Both fail silently — wrong turn re-run, no error.
-The exact pointer is in every payload already.
+This replaced counting messages to guess the fork point, which needed an off-by-one rule
+*and* a tie-break, and failed silently when either was wrong.
 
-### 8.5 `getBranchContext` — flat list to tree
+### 8.4 What `getBranchContext` gives back
 
-```ts
-// lib/use-branching.ts:117
-const branchContext = useMemo(
-  () => getBranchContext(activeBranch, checkpointHistory),
-  [activeBranch, checkpointHistory],
-);
-```
+Pure function, fetches nothing (`lib/use-branching.ts:117`). `activeBranch` is the only
+input that changes the result.
 
-From `@langchain/langgraph-sdk/ui`. **Pure** — it fetches nothing, it only reshapes the
-array you hand it. `activeBranch` is a path string like `"<id>>…"`; `""` means "the
-default lineage".
+| Return | What it is | Feeds |
+|---|---|---|
+| `flatHistory` | active branch's states, oldest first | the transcript (`:181`) |
+| `threadHead` | `flatHistory.at(-1)`, the branch tip | `forkFrom` on new messages (`:123`) |
+| `branchByCheckpoint` | `checkpoint → { branch, branchOptions }` | the switcher (`:148`) |
 
-| Return | What it is | Used for | Where |
-|---|---|---|---|
-| `flatHistory` | states on the active branch, **oldest first** | rebuilding the transcript | `:181` |
-| `threadHead` | `flatHistory.at(-1)` — the branch tip | anchoring new messages | `:123` |
-| `branchByCheckpoint` | `checkpoint → { branch, branchOptions }` | the switcher | `:148` |
-| `branchTree` | the whole fork tree | unused here | — |
+`branchOptions.length > 1` is the entire condition for showing `‹ Branch 1/2 ›`, so an
+unforked thread renders no control (`BranchSwitcher.tsx:23`). Every message below a fork
+shares the same options, so they are deduped to one switcher per fork (`:153`).
 
-`branchOptions` is the list of sibling lineages at that fork. `length > 1` is the entire
-condition for showing a switcher, which is why `BranchSwitcher` returns `null` otherwise
-(`components/BranchSwitcher.tsx:23`) and an unforked thread shows no control at all.
+### 8.5 Two things that break silently
 
-### 8.6 One switcher per fork, not one per message
-
-Every message downstream of a fork shares the same `branchOptions`, so rendering the
-control per message stacks duplicates. Dedupe on the option list
-(`lib/use-branching.ts:153`):
+**The transcript must follow the branch.** `stream.messages` is whatever was streamed
+last and does not track `activeBranch` — skip this and the switcher moves while the text
+does not:
 
 ```ts
-const key = siblingBranches?.join(",");
-if (key) {
-  if (seenSiblingSets.has(key)) siblingBranches = undefined;   // already drawn
-  else seenSiblingSets.add(key);
-}
+// lib/use-branching.ts:202 — live while running, branch history when idle
+stream.isLoading || branchMessages.length === 0 ? streamMessages : branchMessages
 ```
 
-`ApproveChat.tsx:227` then renders `{switcher}` above both human and AI bubbles, and it
-appears exactly once — at the fork.
-
-### 8.7 Which messages to display
-
-This is the step that is easy to skip, and skipping it makes branching look broken:
-`stream.messages` is a **single lineage** — whatever was streamed last — and it does not
-follow `activeBranch`. Clicking the switcher then moves the control and nothing else.
-
-```ts
-// lib/use-branching.ts:202
-selectMessages: (streamMessages) =>
-  stream.isLoading || branchMessages.length === 0 ? streamMessages : branchMessages,
-```
-
-- **While a run is in flight** — `stream.messages`, so tokens appear as they arrive.
-- **When idle** — messages read back out of the active branch's newest state.
-
-Both halves matter. Using branch history mid-run would freeze the transcript until the
-next refresh; using `stream.messages` when idle is the bug above.
-
-`ApproveChat.tsx:58` is the single call site: `const messages = branching.selectMessages(stream.messages)`.
-
-### 8.8 Anchoring new messages to the branch on screen
-
-`submit(input)` with no options appends to the thread's **latest** checkpoint. So
-viewing an older branch and typing silently moves the turn to the newest branch instead.
+**New messages must anchor to the branch on screen.** `submit(input)` appends to the
+thread's *latest* checkpoint, so typing on an older branch jumps the turn to the newest
+one. Pass the tip (`ApproveChat.tsx:104`):
 
 ```tsx
-// ApproveChat.tsx:104
-const tip = branching.branchTipCheckpointId;     // = threadHead's checkpoint id
-void stream.submit(
-  { messages: [new HumanMessage(text)] },
-  tip != null ? { forkFrom: tip } : undefined,
-);
+void stream.submit({ messages: [new HumanMessage(text)] }, { forkFrom: tip });
 ```
 
-Verified: on a branch whose story had a dog chasing squirrels, asking "what was the dog
-chasing?" answered *squirrels* — the sibling branch's story has no chasing in it, so the
-answer proves which lineage the model was given.
+Verified: on a branch whose dog chased squirrels, "what was the dog chasing?" answered
+*squirrels* — the sibling branch's story has no chasing in it.
 
-### 8.9 A fork branches, it does not delete
+### 8.6 Three things worth knowing
 
-`submit(input, { forkFrom })` moves the thread to a new branch. The old messages stay in
-`getHistory()`; they only stop appearing in `/state`.
+- **A fork branches, it does not delete.** Old messages stay in `getHistory()`, they
+  only leave `/state`.
+- **`/state` and the UI can legitimately disagree.** `/state` is the thread head, the UI
+  is the branch you are on. Dump the history tree before assuming a stale client.
+- **Reload lands on the SDK's default branch**, not the one you were viewing —
+  `activeBranch` is component state and nothing persists it. The official pattern does
+  the same. The switcher gets you back.
 
-A consequence worth knowing before debugging it: **`/state` and the UI can legitimately
-disagree.** `/state` returns the thread head; the UI shows the branch you are on. Dump
-the history tree before assuming the client is stale — this looks exactly like a stale
-client and is not one.
-
-Deriving the transcript from branch history also retired the workaround that used to
-live here: a `reconnect()` remount after every fork, which existed only to stop the
-replaced reply lingering below the new one. The view now matches the server by itself.
-The remount survives for Stop (§7), where the client really does hold state the server
+Deriving the transcript from branch history also retired the `reconnect()` remount after
+a fork. It survives for Stop (§7), where the client really does hold state the server
 has discarded.
-
-### 8.10 Known rough edge
-
-Reloading lands on the SDK's default branch, not the one you were viewing —
-`activeBranch` is component state and nothing persists it. The official pattern behaves
-the same way. Nothing is lost; the switcher gets you back.
 
 ---
 
