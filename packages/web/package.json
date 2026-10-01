@@ -13,6 +13,7 @@
     "@langchain/langgraph-sdk": "^1.9.24",
     "@langchain/react": "^1.0.35",
     "@pierre/diffs": "^1.2.3",
+    "@vercel/analytics": "^2.0.1",
     "langchain": "^1.5.10",
     "next": "^16.3.7",
     "react": "^19",

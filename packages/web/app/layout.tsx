@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import { Nav } from "@/components/Nav";
+import { Analytics } from "@vercel/analytics/next";
 import "./globals.css";
 
 // Replaces the remote @import that used to sit at the top of base.css. next/font
@@ -30,6 +31,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="h-dvh flex flex-col overflow-hidden">
         <Nav />
         <main className="flex-1 min-h-0 flex flex-col">{children}</main>
+        <Analytics />
       </body>
     </html>
   );
