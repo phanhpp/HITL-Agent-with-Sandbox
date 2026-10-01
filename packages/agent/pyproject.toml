@@ -1,0 +1,30 @@
+[project]
+name = "agent"
+version = "0.1.0"
+description = "LangGraph agents served by langgraph-api."
+requires-python = ">=3.11"
+
+# Runtime deps only — these are what the deployed image installs.
+dependencies = [
+    "langchain",
+    "langgraph",
+    "langchain-anthropic",
+]
+
+# Local-only. The deployed image already ships langgraph-api, and the CLI is a
+# development tool, so neither belongs in the runtime set above.
+[dependency-groups]
+dev = [
+    "langgraph-cli[inmem]",
+    "langgraph-api>=0.9.0",
+]
+
+# uv mode requires an installable package -- `tool.uv.package = false` is rejected
+# with "so it cannot be deployed". `agents/` and `tools/` each got an __init__.py so
+# setuptools can find them; `from tools.email import ...` keeps working either way.
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["agents", "tools"]

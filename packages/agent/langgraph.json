@@ -4,7 +4,7 @@
     "human_in_the_loop": "./agents/human_in_the_loop.py:agent"
   },
   "env": ".env",
-  "dependencies": [
-    "."
-  ]
+  "source": {
+    "kind": "uv"
+  }
 }

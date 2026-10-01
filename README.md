@@ -42,12 +42,13 @@ cannot add headers, so the LangSmith key would have to reach the browser.
 
 ## Quickstart
 
-Needs Node 22+ (`.nvmrc` says 24), pnpm, Python 3.11+, GNU Make, and an
-[Anthropic API key](https://console.anthropic.com/).
+Needs Node 22+ (`.nvmrc` says 24), pnpm, [uv](https://docs.astral.sh/uv/), GNU Make,
+and an [Anthropic API key](https://console.anthropic.com/). uv fetches the right Python
+itself, so you do not need one installed.
 
 ```bash
 cp .env.example packages/agent/.env     # then add ANTHROPIC_API_KEY
-make install                            # .venv + pnpm install
+make install                            # uv sync + pnpm install
 make dev-next                           # agent :2024 + Next.js :4200
 ```
 
@@ -69,7 +70,7 @@ Open [http://localhost:4200](http://localhost:4200).
 | Path | What |
 |---|---|
 | `packages/web` | **The app.** Next.js 16 App Router, Tailwind v4 |
-| `packages/agent` | The Python graph. `langgraph.json` registers `human_in_the_loop` |
+| `packages/agent` | The Python graph — a uv project. `langgraph.json` registers `human_in_the_loop` |
 | `packages/frontend` | The original Vite app, kept as a reference. Not part of the system |
 
 ## Troubleshooting
@@ -79,8 +80,8 @@ Open [http://localhost:4200](http://localhost:4200).
   `lsof -nP -iTCP:2024 -sTCP:LISTEN`.
 - **`pnpm` fails with `URL.canParse is not a function`.** Node older than 22. Run
   `nvm use` in the repo root, in each new terminal.
-- **`make install` cannot find Python.** Needs 3.11+ as `python3.12`/`python3.11` on
-  `PATH`, or Homebrew `python@3.12`. If `.venv` was built with the wrong one,
-  `rm -rf .venv && make install`.
+- **Agent dependencies look wrong.** They are pinned in `packages/agent/uv.lock`. Run
+  `uv sync` from `packages/agent` to match it exactly, or `uv lock --upgrade` to move
+  them deliberately.
 - **Inspect server state directly.** `curl localhost:2024/threads/<id>/state` is the
   truth; `threads/search` returns a stale snapshot.

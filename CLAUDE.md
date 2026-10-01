@@ -7,9 +7,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 All run from the repo root (there is no root `package.json`; the Makefile drives everything):
 
 ```bash
-make install        # create .venv (Python 3.11+), pip install agent deps, pnpm install frontend
+make install        # uv sync in packages/agent (needs uv), pnpm install both frontends
 make dev            # agent (port 2024) + frontend (port 4100) together
-make dev-agent      # LangGraph dev server only: .venv/bin/python -m langgraph_cli dev --port 2024
+make dev-agent      # LangGraph dev server only, from packages/agent/.venv (a uv project)
 make dev-frontend   # Vite only
 ```
 
