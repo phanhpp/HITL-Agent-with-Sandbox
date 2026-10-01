@@ -423,142 +423,109 @@ useEffect(() => {
 `stream.isLoading` in a dependency array is the trick: compare it to its previous value
 and you get a "run finished" event out of a boolean.
 
-### 8.3 Merging the two into one checkpoint list
+### 8.3 Merging live events into history
 
-`getBranchContext` takes **one array**. So the channel's live ids have to be folded into
-the list `getHistory()` returned. Four steps, all in `lib/use-branching.ts:86`.
+`getBranchContext()` needs **one list of checkpoints, newest first**. `getHistory()`
+only updates when a run finishes, so live events from `useChannel` are turned into
+temporary **synthetic states** and merged with the server's records.
 
-**Step 1 — index what history already knows, by checkpoint id.**
-
-```ts
-const byId = new Map<string, HistoryState>();
-for (const state of history) {
-  const id = state.checkpoint?.checkpoint_id;
-  if (id) byId.set(id, state);
-}
-```
-
-**Step 2 — walk the channel events and skip anything already indexed.** This is the
-whole dedupe; it is why the same checkpoint never appears twice.
-
-```ts
-for (const event of checkpointEvents) {
-  const id = event?.params?.data?.id;
-  if (typeof id !== "string" || byId.has(id)) continue;     // history wins
-```
-
-**Step 3 — a genuinely new id becomes a state built from the event alone.** The event
-carries `{ id, parent_id }` and nothing else, so that is all there is to work with:
-
-```ts
-  const state = {
-    values: {},                                              // no messages exist yet
-    checkpoint:        { ...blank, checkpoint_id: id },
-    parent_checkpoint: { ...blank, checkpoint_id: parentId },
-    next: [], tasks: [],
-  } as unknown as HistoryState;
-  byId.set(id, state);
-  synthetic.unshift(state);                                  // see ordering below
-}
-```
-
-**Step 4 — concatenate, synthetic first.**
-
-```ts
-return [...synthetic, ...history];
-```
-
-#### Worked through one run
-
-`getHistory()` was last fetched when the previous run ended. It returns **newest first**:
+Four steps — `lib/use-branching.ts:86`:
 
 ```
-…06cdd9   parent …e7ce15   real   2 messages
-…e7ce15   parent …946419   real   1 message
-…946419   parent —         real   0 messages
+┌─────────────────────────────────────────────────────────────┐
+│  1. Index server history                                    │
+│     Store every history state in a Map, keyed by            │
+│     checkpoint_id.                                          │
+└──────────────────────────────┬──────────────────────────────┘
+                               ▼
+┌─────────────────────────────────────────────────────────────┐
+│  2. Deduplicate live events                                 │
+│     Loop the channel events. Skip any id already in the Map.│
+└──────────────────────────────┬──────────────────────────────┘
+                               ▼
+┌─────────────────────────────────────────────────────────────┐
+│  3. Build synthetic states                                  │
+│     Turn each new id into a bare ThreadState — ids only,    │
+│     values: {}. unshift onto the synthetic array.           │
+└──────────────────────────────┬──────────────────────────────┘
+                               ▼
+┌─────────────────────────────────────────────────────────────┐
+│  4. Combine                                                 │
+│     return [...synthetic, ...history]                       │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-The agent is now typing, and two `checkpoints` events have arrived on the wire, in the
-order the server wrote them:
+A channel event carries `{ id, parent_id }` and nothing else, which is why a synthetic
+state can only ever hold ids.
+
+#### The merged array in action
+
+`unshift` prepends each live event as it arrives, so the synthetic half ends up in the
+same newest-first order `getHistory()` uses — which is what lets step 4 plainly
+concatenate:
 
 ```
-{ id: …347745, parent_id: …06cdd9 }        ← written first
-{ id: …21d0aa, parent_id: …347745 }        ← written second
+[LIVE SYNTHETIC]  cp_21d0aa ──► parent: cp_347745   values: {}
+[LIVE SYNTHETIC]  cp_347745 ──► parent: cp_06cdd9   values: {}    ← joins here
+[SERVER HISTORY]  cp_06cdd9 ──► parent: cp_e7ce15   2 messages
+[SERVER HISTORY]  cp_e7ce15 ──► parent: cp_946419   1 message
+[SERVER HISTORY]  cp_946419 ──► parent: NONE        0 messages
 ```
 
-Neither id is in `byId`, so both become synthetic states. `unshift` puts each new one at
-the front, which flips the wire order into newest-first — the same order `getHistory()`
-uses. That is why step 4 can just concatenate:
+The two halves are not matched by position or timestamp. They join because the oldest
+synthetic state's `parent_id` is a checkpoint history already holds. Parent pointers
+make it one unbroken chain, and `getBranchContext` walks it without knowing which state
+came from where.
 
-```
-…21d0aa   parent …347745   synthetic   values: {}
-…347745   parent …06cdd9   synthetic   values: {}       ← joins here
-…06cdd9   parent …e7ce15   real        2 messages
-…e7ce15   parent …946419   real        1 message
-…946419   parent —         real        0 messages
-```
+#### Self-healing
 
-The merge works because of that middle line: the synthetic chain's oldest `parent_id`
-(`…06cdd9`) is a checkpoint history already has. Parent pointers link the two halves
-into one unbroken chain, and `getBranchContext` walks it without knowing or caring which
-states came from where.
+When the run completes, `refreshHistory()` refetches from the server (§8.2) and
+`cp_347745` and `cp_21d0aa` come back as real states with messages. Step 2 now finds
+them in the Map and skips them, so the synthetic copies vanish on their own.
 
-#### It heals itself when the run ends
-
-`refreshHistory()` fires on the falling edge of `isLoading` (§8.2), and `…347745` and
-`…21d0aa` come back as **real** states, this time with messages. On the next render
-`byId.has(id)` is true for both, step 2 skips them, and the synthetic copies vanish.
-
-So a synthetic state exists only in the window between "the server wrote this
-checkpoint" and "we refetched history", which is exactly the window the channel exists
-to cover.
+They exist only between "the server wrote this checkpoint" and "we refetched" — exactly
+the window the channel exists to cover.
 
 #### Two consequences of `values: {}`
 
-- **Fine for the tree.** `getBranchContext` reads only `checkpoint` and
-  `parent_checkpoint`, so a fork shows up the moment it is written.
-- **Not fine for messages.** Anything reading messages back out has to skip these, which
-  is why `branchMessages` scans for the last state with a **non-empty** `messages` array
-  rather than simply taking `threadHead` (`lib/use-branching.ts:181`). Taking the tip
-  blindly would blank the transcript mid-run.
+| | |
+|---|---|
+| **Good for the tree** | `getBranchContext` reads only `checkpoint` and `parent_checkpoint`, so a `‹ 1/2 ›` switcher appears while the agent is still typing. |
+| **Must be skipped for messages** | Synthetic states hold no message content. `branchMessages` scans back for the newest state with a **non-empty** `messages` array (`lib/use-branching.ts:181`); taking the tip blindly would blank the transcript mid-run. |
 
-### 8.4 Where the fork point actually comes from
+### 8.4 How fork points are derived
 
-For each message, find the **oldest state whose `values.messages` contains it** — the
-state where that message first appears. That state's `parent_checkpoint` is the
-checkpoint from just *before* the message existed, which is precisely what `forkFrom`
-wants.
+To Edit or Retry a message you must pass its exact rewind checkpoint id as `forkFrom`.
 
-```ts
-// lib/use-branching.ts:132 — getHistory is newest-first, so iterate backwards
-for (let i = history.length - 1; i >= 0; i -= 1) {
-  const state = history[i];
-  for (const message of state.values?.messages ?? []) {
-    if (!message.id || result.has(message.id)) continue;   // oldest wins
-    const parentCheckpointId = state.parent_checkpoint?.checkpoint_id;
-    ...
-  }
-}
+**The logic** — `lib/use-branching.ts:132`:
+
+1. Walk history **oldest → newest** to find the first snapshot in which the message
+   appears. `getHistory()` returns newest-first, so that means iterating from the end of
+   the array: `for (let i = history.length - 1; i >= 0; i -= 1)`.
+2. Read that snapshot's `parent_checkpoint.checkpoint_id`.
+3. That parent is the conversation exactly as it stood **just before the message
+   existed**.
+
+**Real example** — the first three checkpoints of a live thread:
+
+```
+Snapshot      Parent        Messages in snapshot
+──────────    ──────────    ────────────────────────────────
+cp_946419     (none)        0  — thread created
+cp_e7ce15     cp_946419     1  — human prompt
+cp_06cdd9     cp_e7ce15     2  — human prompt + AI reply
 ```
 
-Worked through a real thread:
+- The AI reply first appears in `cp_06cdd9`.
+- Its `parent_checkpoint` is `cp_e7ce15` — the state holding only the question.
+- Retry on that reply submits `forkFrom: "cp_e7ce15"`, and the server rewinds there and
+  generates a new reply.
 
-| checkpoint | parent | messages in that state |
-|---|---|---|
-| `…946419` | — | 0 |
-| `…e7ce15` | `…946419` | 1 — the human message |
-| `…06cdd9` | `…e7ce15` | 2 — human + AI reply |
-
-- The AI reply first appears in `…06cdd9`.
-- `…06cdd9.parent_checkpoint` is `…e7ce15` — the state holding only the question.
-- Retry on that reply submits `forkFrom: "…e7ce15"`, and the server re-runs the model
-  from there.
-
-An earlier version of this file matched on message **count** instead. That is a
-heuristic: it needs an off-by-one rule (message #3 is index 2, so look for the
-checkpoint with 2 messages) *and* a tie-break (several checkpoints share a count within
-one step, and the newest is the right one). Both fail silently — wrong turn re-run, no
-error. The real pointer was in the payload the whole time.
+**Why it matters.** The previous version of this code counted messages to guess the
+fork point. That needs an off-by-one rule (message #3 is index 2, so look for the
+snapshot with 2 messages) *and* a tie-break (several snapshots share a count within one
+step; the newest is the right one). Both fail silently — wrong turn re-run, no error.
+The exact pointer is in every payload already.
 
 ### 8.5 `getBranchContext` — flat list to tree
 
