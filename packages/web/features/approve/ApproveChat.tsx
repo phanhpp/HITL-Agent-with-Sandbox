@@ -178,6 +178,7 @@ export function ApproveChat({ threadId, onThreadId, onLeave, reconnect }: ChatSh
             branchInfo={branching.metadataFor(message.id)}
             activeBranch={branching.activeBranch}
             onSwitchBranch={branching.switchBranch}
+            onFork={branching.markFork}
           />
           {index === pendingIndex && approvalCards}
         </Fragment>
@@ -198,12 +199,15 @@ function MessageRow({
   branchInfo,
   activeBranch,
   onSwitchBranch,
+  onFork,
 }: {
   stream: AnyStream;
   message: BaseMessage;
   branchInfo: BranchInfo;
   activeBranch: string;
   onSwitchBranch: (branch: string) => void;
+  /** Tells the hook to move the view onto the branch this fork creates. */
+  onFork: (forkFromId: string) => void;
 }) {
   const forkFrom = branchInfo.parentCheckpointId;
   const siblings = branchInfo.siblingBranches;
@@ -243,6 +247,7 @@ function MessageRow({
           onCancel={() => setIsEditing(false)}
           onSave={(text) => {
             setIsEditing(false);
+            onFork(forkFrom);
             fork.editAndRerun(forkFrom, text);
           }}
         />
@@ -293,7 +298,9 @@ function MessageRow({
             canEdit={false}
             disabled={forkDisabled}
             onRegenerate={() => {
-              if (forkFrom) fork.regenerate(forkFrom);
+              if (!forkFrom) return;
+              onFork(forkFrom);
+              fork.regenerate(forkFrom);
             }}
           />
         )}
