@@ -9,6 +9,7 @@ dependencies = [
     "langchain",
     "langgraph",
     "langchain-anthropic",
+    "deepagents>=0.7.21",
 ]
 
 # Local-only. The deployed image already ships langgraph-api, and the CLI is a

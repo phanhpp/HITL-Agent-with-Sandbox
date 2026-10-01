@@ -182,10 +182,22 @@ const percentage = subagents.length
 
 ## 4. The todo list
 
-### Planning is opt-in
+### Planning is opt-in — CONFIRMED on 0.7.21
 
-As of deepagents v0.7 the todo middleware is **not** on by default. Without it,
-`stream.values.todos` is `undefined` — not `[]`. Enable it explicitly:
+Probed directly. `create_deep_agent(model=...)` with no `middleware=` registers:
+
+```
+delete  edit_file  execute  glob  grep  ls  read_file  task  write_file
+```
+
+**No `write_todos`.** Add `middleware=[TodoListMiddleware()]` and it appears:
+
+```
+... task  write_file  write_todos
+```
+
+So the docs are right and §8.1's apparent contradiction is a property of that
+reference repo, not of the library. Enable it explicitly:
 
 ```python
 from langchain.agents.middleware import TodoListMiddleware
@@ -310,20 +322,93 @@ once.
 
 ---
 
-## 7. Unknowns to probe before building
+## 7. Probe results
 
-Each of these has burned time in this project when assumed. Probe, then build.
+Run against `deepagents 0.7.21` in `packages/agent/.venv`. Most of this section
+used to be guesses.
 
-| Unknown | How to settle it |
+| Question | Answer |
 |---|---|
-| Does `interrupt_on` fire on `stream.interrupt` or `stream.getThread()?.interrupts`? | Raise one and look. `lib/use-hitl.ts` handles both, but the subagent branch is **written from types and never executed**. |
-| Does `stream.values.todos` match the `Todo` shape at runtime? | `curl localhost:2024/threads/<id>/state` after a planning run. |
-| What is the sandbox `files` shape, if any? | Same state dump. The docs say it is not in state — confirm for our backend. |
-| Do subagents surface their own reasoning blocks? | Enable `thinking`, delegate, read `contentBlocks` on a subagent message. |
-| Does thinking survive a HITL pause/resume with tools? | The Anthropic API constrains thinking + tool use; `langchain-anthropic` is meant to handle it. Unverified here. |
-| Does `deepagents` break `/approve`? | It bumps `langchain-core` for both graphs in the shared `uv.lock`. Re-run the `/approve` flow after `uv add`. |
+| `create_deep_agent` params | `model tools system_prompt middleware subagents skills memory permissions backend interrupt_on response_format state_schema context_schema checkpointer store debug name cache` |
+| Todos on by default? | **No.** `write_todos` appears only with `middleware=[TodoListMiddleware()]` |
+| Where do files live? | **Graph state.** Input schema is `{files, messages}` |
+| `CompiledSubAgent` exists? | Yes, exported from `deepagents` |
+| Built-in backends | `StateBackend CompositeBackend StoreBackend FilesystemBackend LocalShellBackend ContextHubBackend` — note **no sandbox here** |
+| `LangSmithSandbox` importable? | **Yes**, `deepagents.backends.langsmith.LangSmithSandbox` |
+| Does `/approve` survive the bump? | `langchain-core` 1.6.5 → **1.6.6**, `langchain-anthropic` → 1.7.5; the graph still imports. Browser smoke test still owed |
+| `task` tool with no subagents? | **Present** — the auto-added `general-purpose` subagent |
 
----
+Two results worth dwelling on:
+
+**`files` is a state key.** That is the whole justification for Tier 1 in §9: a
+file panel is `stream.values.files`, the same kind of read as the todo list. No
+HTTP routes, no sandbox.
+
+**`StateBackend` has no `execute()`.** Its methods are `ls read write edit glob
+grep delete upload_files download_files` (plus `a`-prefixed async forms) — no
+shell. `execute` *does* appear in the static tool registry even so; the backends
+doc says tools an unsupported backend cannot serve are "automatically hidden from
+the model at request time", which would explain it. **Unverified at runtime** —
+worth confirming before claiming Tier 1 has no shell.
+
+### 7.1 Runtime probes
+
+**`todos` is in state, but not in the schema.** The input schema is
+`{files, messages}` even with `TodoListMiddleware`. At runtime it is there:
+
+```
+state.values keys: ['files', 'messages', 'todos']
+todos: 5 items
+  {"content": "Research top attractions and temples in Kyoto...", "status": "completed"}
+```
+
+So `stream.values.todos` works, the shape is `{content, status}` — confirming §4
+and §8.3 — and **you cannot discover the key from the schema.** Read the running
+thread, not the types.
+
+**A subagent's interrupt surfaces at the ROOT.** This is the big one. A
+supervisor with a dict subagent and `interrupt_on={"write_file": True}` set
+**only on the supervisor**:
+
+```
+message trail:
+  human  tool_calls=[]
+  ai     tool_calls=['task']        <- it really did delegate
+
+next:  ('tools',)
+tasks: name="tools", interrupts: 1
+  payload keys: ['action_requests', 'review_configs']
+  action_requests: [{"name": "write_file",
+                     "args": {"file_path": "/notes.md", "content": "hello"},
+                     "description": "Tool execution requires approval\n\nTool: write_file..."}]
+  review_configs:  [{"action_name": "write_file",
+                     "allowed_decisions": ["approve", "edit", "reject", "respond"]}]
+```
+
+Three conclusions, all of which make `/orchestrate` easier than planned:
+
+1. **Dict subagents inherit `interrupt_on`**, exactly as they inherit `backend`.
+   Set it once on the supervisor and delegated tool calls are gated.
+2. **The interrupt lands on the thread's root `tasks[]`**, not in a subagent
+   namespace. So the `stream.interrupt` path — the one `/approve` already uses —
+   should serve it, and `use-hitl`'s untested nested branch is **not needed for
+   dict subagents**. It may still matter for a `CompiledSubAgent` carrying its own
+   `interrupt_on`; untested.
+3. **Our `approvalPending` gate already works.** It reads
+   `threadHead?.tasks[].interrupts`, which is exactly where this appeared.
+
+The payload is the familiar snake_case-over-the-wire shape, so `ApprovalCard`
+needs no changes — and note `allowed_decisions` arrived populated with all four
+decisions without us asking.
+
+### Still unknown
+
+| Question | How to settle |
+|---|---|
+| Is `execute` really hidden with `StateBackend`? | It is in the static registry but `StateBackend` has no `execute()`. Ask an agent to run a shell command and see what happens. Moot for Tier 1 either way. |
+| Does a `CompiledSubAgent` with its own `interrupt_on` also surface at the root? | Only matters for Tier 2. |
+| Thinking + tools + interrupts together | Enable `thinking`, delegate, pause on an approval, resume. |
+| `/approve` in the browser after the `langchain-core` bump | Smoke test. |
 
 ## 8. What the official example repos actually do
 
@@ -341,13 +426,14 @@ agent = create_deep_agent(
 ).with_config({"recursion_limit": 200})
 ```
 
-**No `middleware=[TodoListMiddleware()]`** — yet `write_todos` works and
-`stream.values.todos` populates. That directly contradicts §4 above, which took
-"planning is opt-in as of v0.7" from the docs. One of the two is wrong, and this
-is a working demo.
+**No `middleware=[TodoListMiddleware()]`** — yet it demonstrably produces todos.
 
-**Probe it first** (added to §7): run a deep agent with no middleware and dump
-`/threads/<id>/state`. If `todos` is there, drop the middleware line.
+**Resolved by probe: the docs win.** On `deepagents 0.7.21`, an agent built with
+no `middleware=` has no `write_todos` tool (§4). So that repo must pin an older
+version where planning was still default-on. **We must pass the middleware.**
+
+The lesson is the general one: a reference repo is evidence about *its* pinned
+version, not about the one you installed.
 
 Also note `.with_config({"recursion_limit": 200})` on the **graph**, rather than
 the docs' per-submit `config`. Set once, applies everywhere — prefer it.
@@ -679,7 +765,112 @@ Two adjustments for us:
 - `skills=` points at paths **inside** the sandbox (`/home/daytona/skills`),
   seeded from the host first. Discovery and upload are separate steps.
 
-## 9. How this lands in `/orchestrate`
+### 8.14 Backends: one per agent, and the sandbox goes where `execute` is needed
+
+The IDE reference uses a sandbox because it **is** a coding agent — real files, run
+the tests. A coordinator that plans and delegates never calls `execute`, so giving
+it a sandbox buys nothing and costs a provider, a lifecycle and TTLs.
+
+The built-in backends, and when each applies:
+
+| Backend | Scope | `execute`? |
+|---|---|---|
+| `StateBackend` (default) | thread, in graph state | no |
+| `StoreBackend` | **cross-thread**, durable | no |
+| `FilesystemBackend` | real disk under `root_dir` | no |
+| `LocalShellBackend` | real disk **on the host** | yes — no isolation |
+| Sandbox | isolated remote | yes |
+| `CompositeBackend` | routes path prefixes to the above | — |
+
+Two facts that change the design:
+
+- **`StateBackend` is shared between supervisor and subagents**, and a subagent's
+  files survive its own completion: *"Those files will continue to be available to
+  the supervisor agent and other subagents."* So dict subagents already share a
+  filesystem with the coordinator, no wiring needed.
+- **`StateBackend` files live in graph state**, so a file panel is a
+  `stream.values` read — like the todo list. §5's "the filesystem is not in graph
+  state" is true only of **sandbox** backends. With `StateBackend` the whole
+  `http_app.py` + sandbox lifecycle problem in §5 and §8.12 **does not exist**.
+
+### 8.15 `CompiledSubAgent` gives one subagent a different backend
+
+From `~/dev/llm_wiki/src/agents/agent.py`, which is the answer the docs do not give:
+
+```python
+_backend, sandbox, visual_agent = create_daytona_agent(...)   # its own sandbox
+
+subagents = [CompiledSubAgent(
+    name="marp-slide-creator",
+    description="For creating Marp slides/ presentations",
+    runnable=visual_agent,
+    interrupt_on={"execute": True, "write_file": True, "edit_file": True},
+)]
+
+supervisor = create_deep_agent(
+    backend=GuardedLocalShellBackend(root_dir=..., virtual_mode=True, env=shell_env()),
+    subagents=subagents,
+    interrupt_on={"execute": True, "write_file": True, "edit_file": True},
+    middleware=[PIIMiddleware("email", strategy="redact", apply_to_input=True)],
+)
+```
+
+| Subagent form | Backend |
+|---|---|
+| dict — `{"name", "description", "system_prompt"}` | **inherits** the parent's |
+| `CompiledSubAgent(runnable=...)` | whatever that agent was built with |
+
+Also note `interrupt_on` is **per agent** — set on the supervisor *and* on the
+`CompiledSubAgent`. And `middleware=[...]` is additive, not a replacement.
+
+---
+
+## 9. Architecture decided for `/orchestrate`
+
+**Tier 1 — build this first.**
+
+```
+supervisor        StateBackend (default)        plans, delegates, synthesises
+  ├── researcher  dict subagent, inherits it    shares the same filesystem
+  └── analyst     dict subagent, inherits it
+```
+
+- File panel reads `stream.values`, so **no `http_app.py`, no sandbox, no TTLs** —
+  the pieces most likely to break on a public link simply are not there.
+- `interrupt_on={"write_file": True, "edit_file": True, "delete": True}` gates file
+  writes with the approval card already built. **Set it on the supervisor only** —
+  §7.1 proves dict subagents inherit it, and the interrupt surfaces at the root.
+- Do **not** gate `ls` / `read_file` / `glob` / `grep`. An agent reads constantly;
+  approving every read makes the demo unusable.
+- `interrupt_on` takes `dict[str, bool | InterruptOnConfig]`, where
+  `InterruptOnConfig` is `{allowed_decisions, description, args_schema, when}`.
+  `allowed_decisions` drives which buttons `ApprovalCard` renders, and `when` gates
+  a tool conditionally rather than always. `args_schema` is the field our card
+  **ignores** — it coerces every edited value to a string.
+- Todos, subagent cards and the chat surface are **identical** in both tiers, so
+  Tier 2 is additive rather than a rewrite.
+
+**Tier 2 — later, if the demo wants a real shell.** One `CompiledSubAgent` on a
+sandbox, which is the only thing that adds `execute` and therefore the only thing
+that makes HITL gate a shell command rather than a file write. Brings back §8.12's
+lifecycle and §8.6's two HTTP routes.
+
+**Deferred: per-user durable memory.** `CompositeBackend(default=StateBackend(),
+routes={"/memories/": StoreBackend(namespace=...)})` is the right shape, and the
+LangSmith deployment provisions the store for free. It is deferred because
+**namespacing needs a user id and the demo has no auth** — `user.identity` on an
+open link collapses every visitor into one shared, agent-writable store. Revisit
+when auth exists; until then `StateBackend` alone is honest about what it is.
+
+Two traps recorded for when that happens:
+
+- `store=` is **environment-dependent**, exactly like the checkpointer:
+  `InMemoryStore()` under `langgraph dev`, **omitted** on LangSmith Deployment.
+- Keep `StateBackend` as the Composite **default**. Deep agents write
+  `/large_tool_results/` and `/conversation_history/` to the default backend;
+  defaulting to the store would persist that across every thread forever.
+
+## 9b. What carries over
 
 | From | Take |
 |---|---|
