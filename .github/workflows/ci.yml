@@ -1,0 +1,61 @@
+# The gate that `main` auto-deploying to production makes necessary.
+#
+# Both halves of this repo deploy on push — Vercel builds packages/web, LangSmith
+# builds packages/agent — so without this, a type error or a bad import is found by
+# the deploy rather than before it.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  web:
+    name: Typecheck the web app
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/web
+    steps:
+      - uses: actions/checkout@v4
+
+      # pnpm before setup-node: `cache: pnpm` needs the binary to already exist.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12
+
+      - uses: actions/setup-node@v4
+        with:
+          # Paths in `uses` steps are repo-relative — `defaults.working-directory`
+          # only applies to `run`.
+          node-version-file: .nvmrc
+          cache: pnpm
+          cache-dependency-path: packages/web/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run typecheck
+
+  agent:
+    name: Import the graphs
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/agent
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # --no-dev installs exactly what the deployed image installs, so a dependency
+      # that only works because langgraph-cli happens to pull it in fails here.
+      # --frozen fails rather than silently re-resolving uv.lock.
+      - run: uv sync --no-dev --frozen
+
+      # Importing is the whole check: it catches syntax errors, missing dependencies
+      # and bad imports — the failures that otherwise surface mid-deploy. No API key
+      # is needed, because the models are built inside the graph factory, not at
+      # import time.
+      - run: uv run --no-dev python -c "import agents.human_in_the_loop, agents.orchestrator"
