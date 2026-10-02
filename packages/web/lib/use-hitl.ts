@@ -1,64 +1,64 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { AnyStream } from "@langchain/react";
 import type { ActionRequest, HITLRequest, HITLResponse, ReviewConfig } from "langchain";
+import { normalizeHitlInterruptPayload } from "@langchain/langgraph-sdk/ui";
 
 /**
  * Human-in-the-loop decisions, shared by every page.
  *
- * Lives here rather than in a page because /orchestrate needs the same logic, and
- * because ONE detail differs by where the interrupt fires and is easy to get wrong:
+ * THE RULE THAT SHAPES THIS FILE: a run can pause on SEVERAL interrupts at once, and
+ * each one must be shown and answered separately.
  *
- *   root agent   -> stream.interrupt
- *   subagent     -> stream.getThread()?.interrupts ?? []   (NOT stream.interrupt)
+ * Two parallel subagents each calling write_file produce two independent interrupts.
+ * The SDK is explicit that `stream.interrupt` is only for the simple case — it is
+ * documented as "convenience alias for interrupts[0] ... when only one is pending".
+ * Reading it unconditionally produced a measured failure: with /a.md and /b.md both
+ * pending, the UI rendered ONE card showing /b.md, and approving it wrote /a.md — the
+ * action the user never saw. An approval gate that can do that is worse than none.
  *
- * GUIDE.md 7.3.9 and 12's mistake 5. Reading only stream.interrupt means a subagent
- * pause never shows and the run waits forever.
- *
- * Also: several simultaneous interrupts must be answered with ONE respondAll, because
- * the first respond() starts a new run and the second then fails (12's mistake 6).
+ * So: read `stream.interrupts` (plural), render one card per interrupt, and answer by
+ * id. Each interrupt also gets its OWN decisions array, because that array is
+ * positional and two interrupts can carry different numbers of actions.
  */
-export interface HitlState {
-  /** The actions awaiting review; empty when nothing is pending. */
+
+/** One pending interrupt, with everything a card needs to render and answer it. */
+export interface HitlGroup {
+  /** Interrupt id, used to answer this one specifically. */
+  id: string;
+  /** The actions awaiting review in this interrupt. */
   requests: ActionRequest[];
   /** Positionally aligned with `requests`. */
   reviewConfigs: ReviewConfig[];
+}
+
+export interface HitlState {
+  /** One entry per pending interrupt. Empty when nothing is pending. */
+  groups: HitlGroup[];
   /** True while a decision is in flight; hide the cards so they cannot be double-sent. */
   isProcessing: boolean;
-  approve: () => void;
-  reject: (index: number, reason: string) => void;
-  edit: (index: number, editedArgs: Record<string, unknown>) => void;
+  approve: (groupId: string) => void;
+  reject: (groupId: string, index: number, reason: string) => void;
+  edit: (groupId: string, index: number, editedArgs: Record<string, unknown>) => void;
 }
 
 /**
- * The action requests of one interrupt payload, in either casing.
+ * Read an interrupt payload in whatever casing it arrived in.
  *
- * `stream.interrupt` is camelCase, because useStream normalises it. The thread-level
- * list from `getThread()?.interrupts` is NOT normalised — its payloads arrive straight
- * off the wire as `action_requests` / `review_configs`. Verified by dumping a live
- * payload: `nestedPayloadKeys: "action_requests,review_configs"`.
- *
- * Reading only the camelCase name here returns [] for every nested interrupt, which
- * renders an approval card with no actions and sends `{decisions: []}` on approve.
- * Nothing caught it because a root interrupt is always present today, so the nested
- * branch never runs.
+ * Entries on `stream.interrupts` are already camelCase — the SDK runs this same
+ * normaliser on the way in. Calling it again is idempotent and cheap, and it keeps this
+ * hook correct if it is ever pointed at a raw payload: over plain HTTP the Python server
+ * sends `action_requests` / `review_configs`. The SDK's version also covers two aliases
+ * a hand-rolled one misses: `name` <-> `action_name`, `allowedDecisions` <->
+ * `allowed_decisions`.
  */
-type WireHITLRequest = {
-  actionRequests?: ActionRequest[];
-  action_requests?: ActionRequest[];
-  reviewConfigs?: ReviewConfig[];
-  review_configs?: ReviewConfig[];
-};
+/** Stable identity, so resetting to "nothing answered" never re-renders needlessly. */
+const EMPTY_IDS: ReadonlySet<string> = new Set();
 
-function requestsOf(payload: HITLRequest | undefined): ActionRequest[] {
-  const p = payload as WireHITLRequest | undefined;
-  return p?.actionRequests ?? p?.action_requests ?? [];
-}
-
-function configsOf(payload: HITLRequest | undefined): ReviewConfig[] {
-  const p = payload as WireHITLRequest | undefined;
-  return p?.reviewConfigs ?? p?.review_configs ?? [];
+function normalized(payload: unknown): HITLRequest | undefined {
+  if (!payload) return undefined;
+  return normalizeHitlInterruptPayload(payload) as HITLRequest;
 }
 
 export function useHitl(
@@ -73,86 +73,132 @@ export function useHitl(
   const [isProcessing, setIsProcessing] = useState(false);
 
   /*
-   * Two different types, which GUIDE.md conflates:
+   * Every pending interrupt — and `stream.interrupts` is the only list to read.
    *
-   *   stream.interrupt        -> Interrupt        { value, id? }   root namespace only
-   *   getThread().interrupts  -> InterruptPayload { payload, interruptId, namespace }
+   * Despite its "root" naming it mirrors EVERY namespace, so a subagent pause is in
+   * here too (verified in the browser), and each entry carries `namespace` for resume.
+   * More importantly it is reconciled against server truth: seeded on hydration from
+   * `tasks[].interrupts`, so it survives a reload; tombstoned when answered; and
+   * replayed-but-resolved events are filtered out.
    *
-   * use-stream.d.ts:81 is explicit that stream.interrupts covers "the root namespace",
-   * so a subagent pause only appears on the thread-level list.
+   * `getThread()?.interrupts` looks like a richer alternative and is not. It is an
+   * append-only log of what THIS socket witnessed — nothing seeds it from thread state,
+   * so after a reload it is empty. It also pushes interrupts the list above deliberately
+   * withholds while the SDK works out, against server state, whether a replayed event is
+   * live. Reading it as a fallback therefore only ever adds cards that may already be
+   * resolved.
    *
-   * NOTE: the nested branch is written from the types and is UNVERIFIED until
-   * /orchestrate exists to raise a subagent interrupt (step 6).
+   * It needs one correction though, which `answeredIds` below supplies.
    */
-  const rootRequest = stream.interrupt?.value as HITLRequest | undefined;
+  const groups = useMemo<HitlGroup[]>(() => {
+    const stale = approvalPending === false;
+    if (stale) return [];
 
-  const threadInterrupts = stream.getThread()?.interrupts ?? [];
-  const nested = !rootRequest && threadInterrupts.length > 0 ? threadInterrupts : undefined;
-  const nestedRequest = nested?.[0]?.payload as HITLRequest | undefined;
+    return (stream.interrupts ?? [])
+      .map((entry) => {
+        const req = normalized(entry.value);
+        return {
+          id: String(entry.id ?? ""),
+          requests: req?.actionRequests ?? [],
+          reviewConfigs: req?.reviewConfigs ?? [],
+        };
+      })
+      .filter((g) => g.id !== "" && g.requests.length > 0);
+  }, [stream, approvalPending]);
 
-  const request = rootRequest ?? nestedRequest;
+  /*
+   * Interrupts the server has already executed, which the list above still reports.
+   *
+   * When two interrupts open in the SAME step and you answer one, that step cannot
+   * finish until the rest are answered, so the checkpoint keeps every task — the
+   * answered one included, still carrying its interrupt. In-session the SDK remembers
+   * which ids it answered, but that memory is in-process: reload the page and the
+   * answered card renders again, over an action that already ran.
+   *
+   * The server does distinguish them. A task that ran has a `result` (the tool's
+   * output); one still waiting has `result: null`. Correlating by anything else is not
+   * possible — an ActionRequest is `{name, args, description?}` with no tool-call id, so
+   * the interrupt id against `tasks[]` is the only join there is.
+   *
+   * Filtering only ever REMOVES cards, and `result` is monotonic once set, so a reply
+   * that arrives late can hide a card that should already be gone but can never hide a
+   * live one.
+   */
+  const pendingKey = groups.map((g) => g.id).join("|");
+  const [answeredIds, setAnsweredIds] = useState<ReadonlySet<string>>(EMPTY_IDS);
 
+  useEffect(() => {
+    const threadId = stream.threadId;
+    if (!pendingKey || !threadId) {
+      setAnsweredIds(EMPTY_IDS);
+      return;
+    }
+    let cancelled = false;
+    void stream.client.threads
+      .getState(threadId)
+      .then((state) => {
+        if (cancelled) return;
+        const done = new Set<string>();
+        for (const task of state.tasks ?? []) {
+          if (task.result == null) continue;
+          for (const entry of task.interrupts ?? []) if (entry.id) done.add(entry.id);
+        }
+        setAnsweredIds(done);
+      })
+      // A failed check must not hide a live approval; leave the cards alone.
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [pendingKey, stream]);
 
-  // A fork never resolves the interrupt it replayed, so the stream can hold one the
-  // thread has no task for. The checkpoint decides; the stream only supplies the body.
-  const stale = approvalPending === false;
-  const requests = stale ? [] : requestsOf(request);
-  const reviewConfigs = stale ? [] : configsOf(request);
+  const visible = useMemo(
+    () => (answeredIds.size === 0 ? groups : groups.filter((g) => !answeredIds.has(g.id))),
+    [groups, answeredIds],
+  );
 
+  /**
+   * Answer ONE interrupt, leaving the others pending.
+   *
+   * Always `respondAll` keyed by id, never a bare `respond()`. A bare respond targets
+   * "the newest unresolved" interrupt, which is not necessarily the card the user
+   * clicked — that is exactly how approving /b.md wrote /a.md.
+   *
+   * No `namespace` is passed and none is needed: the SDK resolves it from the id, which
+   * is why a subagent's interrupt resumes correctly from here (also verified).
+   */
   const send = useCallback(
-    async (build: (actionRequests: ActionRequest[]) => HITLResponse) => {
-      if (!request) return;
+    async (groupId: string, build: (actions: ActionRequest[]) => HITLResponse) => {
+      const group = groups.find((g) => g.id === groupId);
+      if (!group) return;
       setIsProcessing(true);
       try {
-        if (rootRequest) {
-          await stream.respond(build(requestsOf(rootRequest)));
-          return;
-        }
-        if (!nested) return;
-
-        /*
-         * One call for every pending interrupt. Two separate reasons it has to be
-         * one call, and one reason each response must be built separately:
-         *
-         *  - Calling respond() twice fails. The first resume starts a new run, so
-         *    the second has no interrupted run to answer (GUIDE.md 12, mistake 6).
-         *  - respondAll takes a map of interruptId -> response, and resolves each
-         *    namespace internally from the thread's interrupt list, so ids are all
-         *    we need to supply.
-         *  - Each interrupt carries its OWN action requests, and a decisions array
-         *    is positional. Building one response from the first interrupt and
-         *    sending it to all of them mismatches the moment two helpers pause with
-         *    different numbers of actions — approving things nobody was shown.
-         */
-        await stream.respondAll(
-          Object.fromEntries(
-            nested.map((entry) => [
-              entry.interruptId,
-              build(requestsOf(entry.payload as HITLRequest | undefined)),
-            ]),
-          ),
-        );
+        await stream.respondAll({ [group.id]: build(group.requests) });
       } finally {
         setIsProcessing(false);
       }
     },
-    [request, rootRequest, nested, stream],
+    [groups, stream],
   );
 
   /*
-   * The fan-out below is deliberate and easy to "fix" wrongly:
-   *   REJECT rejects every action.
-   *   EDIT approves all the others.
-   * Changing either changes what the agent does with the actions you did not click.
+   * The fan-out below is deliberate and easy to "fix" wrongly, and it applies WITHIN
+   * one interrupt:
+   *   REJECT rejects every action in that interrupt.
+   *   EDIT approves all the others in that interrupt.
+   * Other pending interrupts are untouched — they keep their own cards.
    */
   const approve = useCallback(
-    () => void send((actions) => ({ decisions: actions.map(() => ({ type: "approve" as const })) })),
+    (groupId: string) =>
+      void send(groupId, (actions) => ({
+        decisions: actions.map(() => ({ type: "approve" as const })),
+      })),
     [send],
   );
 
   const reject = useCallback(
-    (index: number, reason: string) =>
-      void send((actions) => ({
+    (groupId: string, index: number, reason: string) =>
+      void send(groupId, (actions) => ({
         decisions: actions.map((_, i) => ({
           type: "reject" as const,
           message: i === index ? reason || "User rejected" : "Rejected along with other actions",
@@ -162,16 +208,19 @@ export function useHitl(
   );
 
   const edit = useCallback(
-    (index: number, editedArgs: Record<string, unknown>) =>
-      void send((actions) => ({
+    (groupId: string, index: number, editedArgs: Record<string, unknown>) =>
+      void send(groupId, (actions) => ({
         decisions: actions.map((_, i) =>
           i === index && actions[index]
-            ? { type: "edit" as const, editedAction: { name: actions[index].name, args: editedArgs } }
+            ? {
+                type: "edit" as const,
+                editedAction: { name: actions[index].name, args: editedArgs },
+              }
             : { type: "approve" as const },
         ),
       })),
     [send],
   );
 
-  return { requests, reviewConfigs, isProcessing, approve, reject, edit };
+  return { groups: visible, isProcessing, approve, reject, edit };
 }

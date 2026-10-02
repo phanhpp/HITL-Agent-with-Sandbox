@@ -331,6 +331,33 @@ curl -s localhost:2024/threads/<id>/state | python3 -m json.tool | head -20
 - During a fork, force `false`: a fork replays decisions already made.
 - A real interrupt the forked run raises still appears — pausing *is* a run end, which triggers the refresh that lifts the suppression.
 
+**Several interrupts can be pending at once — never read `stream.interrupt` (singular).**
+- It is documented as an alias for `interrupts[0]`, "when only one is pending".
+- Two parallel subagents each calling `write_file` is enough to break that assumption.
+- Measured: `/a.md` and `/b.md` both pending → one card shown, for `/b.md` → approving it wrote `/a.md`.
+- Fix: read `stream.interrupts`, render one card per entry, answer with `respondAll({ [id]: response })`.
+- Build each response separately — `decisions` is positional within **one** interrupt.
+
+**Read `stream.interrupts`, not `getThread()?.interrupts`.**
+
+| | `stream.interrupts` | `getThread()?.interrupts` |
+|---|---|---|
+| nested / subagent pauses | mirrored in (every namespace) | yes |
+| `namespace` for resume | present | present |
+| after reload | rebuilt from `tasks[].interrupts` | **empty** |
+| replayed history on rejoin | parked until server state confirms | included raw |
+
+- The naming misleads: "root" means the root *snapshot the hooks read*, not the root namespace.
+- Using the thread log as a fallback can only add cards the SDK deliberately withheld.
+
+**An answered interrupt reappears after a reload, if others from the same step are still pending.**
+- The step cannot close, so the checkpoint keeps every task — including the answered one.
+- The client's "already answered" set is in-memory and does not survive the reload.
+- Harmless: answering again is a server-side no-op (state unchanged, no second write, no failed request), and the card then clears.
+- The server can tell them apart: the answered task has a populated `result`, the waiting one has `result: null`.
+- Fixed in `lib/use-hitl.ts`: on each change to the pending set, read `client.threads.getState(threadId)` and drop any group whose task has a `result`.
+- Safe by construction — the filter only removes, and `result` never reverts, so a late or failed check can never hide a live card.
+
 ### Transitions during a fork
 
 **`isLoading` flickers true → false → true when a fork starts**, because an interrupt is a terminal phase.

@@ -407,17 +407,101 @@ Approve resumed the run and wrote the file with no error. This works because the
 approval middleware is attached to the **coordinator**, so the pause is raised in the
 coordinator's own graph — not nested at all. Nothing special is needed on resume.
 
-**`CompiledSubAgent` with its own rules.** This one really is a separate graph. We
-confirmed in Python that it raises and resumes, but **have not tested resuming it from a
-browser**. This is the case the warning above is about. Keep a code path that reads
-`stream.getThread()?.interrupts` and passes `interruptId` and `namespace`, and test it
-before shipping a sandboxed helper.
+**`CompiledSubAgent` with its own rules.** This one really is a separate graph, and it
+is the case the warning is about. What we observed from a browser: its pause appeared in
+both lists below, and `respondAll({ [interruptId]: … })` resumed it with no namespace
+passed — the SDK looks the namespace up from the id. Treat that as one observation, not
+a guarantee: pass `namespace` explicitly if you are answering an id the client never
+saw, and re-check it before shipping a sandboxed helper.
 
-A useful middle ground, and what this repo does: try the root pause first, fall back to
-the thread-level list, and resume the fallback with `respondAll({ [interruptId]: … })`.
-The SDK fills in `namespace` from the id (`StreamRespondOptions`: *"When omitted,
-resolved from `thread.interrupts` / `stream.interrupts` for the given `interruptId`"*),
-so that one call covers both shapes.
+### A run can pause more than once at a time
+
+Two helpers working in parallel, each calling a gated tool, produce **two independent
+pauses**. This is the easiest thing in the whole section to get wrong, and getting it
+wrong is worse than having no approval step at all.
+
+`stream.interrupt` (singular) is an alias for `interrupts[0]`. Read it while two pauses
+are open and you render one card, for one of them, while a bare `respond()` answers
+*the other one*. Measured: with `/a.md` and `/b.md` both waiting, the page showed a
+single card for `/b.md`, and approving it wrote `/a.md` — an action the user never saw.
+
+So read the plural list, render one card per entry, and answer by id:
+
+```tsx
+stream.interrupts.map((entry) => (
+  <ApprovalCard
+    key={entry.id}
+    request={entry.value}
+    onApprove={() => stream.respondAll({ [entry.id]: buildResponse(entry.value) })}
+  />
+));
+```
+
+Two details that are not optional:
+
+- **One `respondAll`, not two `respond()` calls.** The first resume starts a new run, so
+  the second has no interrupted run left to answer and fails.
+- **Build each response separately.** A response carries a `decisions` array that lines
+  up *positionally* with that pause's own actions. Two pauses can carry different
+  numbers of actions, so one response reused for both approves things nobody was shown.
+
+### Which list of pauses to read
+
+Older guidance splits the job in two — render from `stream.interrupts`, target from
+`getThread()?.interrupts`. That split no longer holds. Read `stream.interrupts` for
+both.
+
+| | `stream.interrupts` | `getThread()?.interrupts` |
+|---|---|---|
+| covers helper / sub-graph pauses | yes — every namespace is mirrored in | yes |
+| carries `namespace` for resume | yes | yes |
+| after a page reload | rebuilt from thread state | **empty** |
+| pauses you answered | removed | removed |
+| history replayed on rejoin | held back until thread state confirms it | included as-is |
+
+The bottom two rows are the reason. `getThread()?.interrupts` is a log of what *this
+connection* witnessed — nothing seeds it from thread state, so a reloaded page starts
+with none. And on reconnect the server replays the thread's event buffer with no marker
+for where history ends, so a raw log cannot tell a pause that is genuinely open from one
+answered minutes ago. `stream.interrupts` holds those back and checks them against
+thread state first. Reading the raw log as a fallback therefore only ever adds cards
+that may already be resolved.
+
+### An answered pause can come back after a reload
+
+When several pauses open in the same step and you answer one, the step cannot finish
+until the rest are answered too — so the checkpoint keeps **all** of them in its task
+list, the answered one included. The client remembers which ids it answered, but that
+memory is in-process: reload the page and the answered card renders again.
+
+Confusing rather than dangerous. Answering it a second time is a no-op server-side and
+the card then disappears (verified: thread state unchanged, no second write, no failed
+request).
+
+The server does distinguish them, through `result` on each entry in `tasks[]`:
+
+| task | listed as interrupted | `result` | really pending |
+|---|---|---|---|
+| the one you answered | yes | the tool's output | no |
+| the one still waiting | yes | `null` | yes |
+
+If the page has to be exactly right across reloads, drop any pause whose task already
+has a `result`. Nothing in the pause payload lets you match it any other way — an action
+request is `{name, args, description?}` with no tool-call id — so the join is the
+interrupt id against `tasks[]`:
+
+```tsx
+const state = await stream.client.threads.getState(stream.threadId);
+const answered = new Set(
+  (state.tasks ?? [])
+    .filter((task) => task.result != null)
+    .flatMap((task) => (task.interrupts ?? []).map((entry) => entry.id)),
+);
+const live = stream.interrupts.filter((entry) => !answered.has(entry.id));
+```
+
+This can only ever remove cards, and `result` never goes back to `null`, so a slow or
+failed check hides a card that should already be gone — never a live one.
 
 `interrupt_on` also accepts more than `True`. Per tool you can set which buttons appear
 (`allowed_decisions`), a description, and a condition (`when`) so a tool only pauses

@@ -11,7 +11,7 @@ import { AIMessage, HumanMessage, type BaseMessage } from "langchain";
 
 import { ASSISTANTS, resolveAgentUrl } from "@/lib/agent";
 import type { AgentState } from "@/lib/state";
-import { useHitl } from "@/lib/use-hitl";
+import { useHitl, type HitlState } from "@/lib/use-hitl";
 import type { ChatShellRenderProps } from "@/components/ChatShell";
 import { ApprovalCard } from "@/components/ApprovalCard";
 import { ToolCallCard } from "@/components/ToolCallCard";
@@ -58,7 +58,7 @@ export function ApproveChat({ threadId, onThreadId, onLeave, reconnect }: ChatSh
   // Branch history when idle, live stream while running. See lib/use-branching.ts.
   const messages = branching.selectMessages(stream.messages);
   const { stopRun, isStopping } = useStopRun(stream, threadId);
-  const pending = hitl.requests.length > 0;
+  const pending = hitl.groups.length > 0;
   const hasMessages = messages.length > 0;
 
   /*
@@ -70,8 +70,8 @@ export function ApproveChat({ threadId, onThreadId, onLeave, reconnect }: ChatSh
    * actually reviewing. Match on the tool name instead and render it in place.
    */
   const pendingIndex = useMemo(() => {
-    if (hitl.requests.length === 0) return -1;
-    const names = new Set(hitl.requests.map((r) => r.name));
+    if (hitl.groups.length === 0) return -1;
+    const names = new Set(hitl.groups.flatMap((g) => g.requests).map((r) => r.name));
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i];
       if (AIMessage.isInstance(m) && (m.tool_calls ?? []).some((tc) => names.has(tc.name))) {
@@ -79,24 +79,10 @@ export function ApproveChat({ threadId, onThreadId, onLeave, reconnect }: ChatSh
       }
     }
     return -1;
-  }, [hitl.requests, messages]);
+  }, [hitl.groups, messages]);
 
   const approvalCards =
-    pending && !hitl.isProcessing ? (
-      <div className="pl-9 max-w-[80%] space-y-3">
-        {hitl.requests.map((actionRequest, idx) => (
-          <ApprovalCard
-            key={`${actionRequest.name}-${idx}`}
-            actionRequest={actionRequest}
-            reviewConfig={hitl.reviewConfigs[idx]}
-            onApprove={hitl.approve}
-            onReject={(reason) => hitl.reject(idx, reason)}
-            onEdit={(editedArgs) => hitl.edit(idx, editedArgs)}
-            isProcessing={hitl.isProcessing}
-          />
-        ))}
-      </div>
-    ) : null;
+    pending && !hitl.isProcessing ? <ApprovalCards hitl={hitl} /> : null;
 
   const submit = (text: string) => {
     // Anchor to the tip of the branch on screen. Without this the SDK appends to the
@@ -318,4 +304,31 @@ function MessageRow({
 
   // Tool messages are not rendered: their content appears inside ToolCallCard.
   return null;
+}
+
+/**
+ * One approval card per pending interrupt, and per action within it.
+ *
+ * Several interrupts can be pending at once (two parallel subagents each writing a
+ * file). Rendering only the first silently hides the others, and answering without an
+ * id can resolve a different one than the card shown.
+ */
+function ApprovalCards({ hitl }: { hitl: HitlState }) {
+  return (
+    <div className="pl-9 max-w-[80%] space-y-3">
+      {hitl.groups.map((group) =>
+        group.requests.map((actionRequest, idx) => (
+          <ApprovalCard
+            key={`${group.id}-${idx}`}
+            actionRequest={actionRequest}
+            reviewConfig={group.reviewConfigs[idx]}
+            onApprove={() => hitl.approve(group.id)}
+            onReject={(reason) => hitl.reject(group.id, idx, reason)}
+            onEdit={(editedArgs) => hitl.edit(group.id, idx, editedArgs)}
+            isProcessing={hitl.isProcessing}
+          />
+        )),
+      )}
+    </div>
+  );
 }

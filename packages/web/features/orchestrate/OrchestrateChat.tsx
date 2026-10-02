@@ -6,7 +6,7 @@ import { AIMessage, HumanMessage } from "langchain";
 
 import { ASSISTANTS, resolveAgentUrl } from "@/lib/agent";
 import type { DeepAgentState } from "@/lib/state";
-import { useHitl } from "@/lib/use-hitl";
+import { useHitl, type HitlState } from "@/lib/use-hitl";
 import { useStopRun } from "@/lib/use-stop-run";
 import type { ChatShellRenderProps } from "@/components/ChatShell";
 import { ApprovalCard } from "@/components/ApprovalCard";
@@ -56,7 +56,7 @@ export function OrchestrateChat({ threadId, onThreadId, onLeave, reconnect }: Ch
   const messages = stream.messages;
   const todos = stream.values?.todos ?? [];
   const files = stream.values?.files ?? {};
-  const pending = hitl.requests.length > 0;
+  const pending = hitl.groups.length > 0;
 
   const subagents = useMemo(() => [...stream.subagents.values()], [stream.subagents]);
   /* Index by `s.id` from .values(), never by the Map key: the runtime key is the
@@ -69,8 +69,8 @@ export function OrchestrateChat({ threadId, onThreadId, onLeave, reconnect }: Ch
   /* Approval cards sit under the message whose tool call is being reviewed, so they
      stay attached once another turn arrives. Same rule as /approve. */
   const pendingIndex = useMemo(() => {
-    if (hitl.requests.length === 0) return -1;
-    const names = new Set(hitl.requests.map((r) => r.name));
+    if (hitl.groups.length === 0) return -1;
+    const names = new Set(hitl.groups.flatMap((g) => g.requests).map((r) => r.name));
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i];
       if (AIMessage.isInstance(m) && (m.tool_calls ?? []).some((tc) => names.has(tc.name))) {
@@ -78,24 +78,10 @@ export function OrchestrateChat({ threadId, onThreadId, onLeave, reconnect }: Ch
       }
     }
     return -1;
-  }, [hitl.requests, messages]);
+  }, [hitl.groups, messages]);
 
   const approvalCards =
-    pending && !hitl.isProcessing ? (
-      <div className="pl-9 max-w-[80%] space-y-3">
-        {hitl.requests.map((actionRequest, idx) => (
-          <ApprovalCard
-            key={`${actionRequest.name}-${idx}`}
-            actionRequest={actionRequest}
-            reviewConfig={hitl.reviewConfigs[idx]}
-            onApprove={hitl.approve}
-            onReject={(reason) => hitl.reject(idx, reason)}
-            onEdit={(editedArgs) => hitl.edit(idx, editedArgs)}
-            isProcessing={hitl.isProcessing}
-          />
-        ))}
-      </div>
-    ) : null;
+    pending && !hitl.isProcessing ? <ApprovalCards hitl={hitl} /> : null;
 
   const submit = (text: string) => {
     void stream.submit({ messages: [new HumanMessage(text)] });
@@ -188,5 +174,32 @@ export function OrchestrateChat({ threadId, onThreadId, onLeave, reconnect }: Ch
         {pendingIndex === -1 && approvalCards}
       </ChatContainer>
     </SplitView>
+  );
+}
+
+/**
+ * One approval card per pending interrupt, and per action within it.
+ *
+ * Several interrupts can be pending at once (two parallel subagents each writing a
+ * file). Rendering only the first silently hides the others, and answering without an
+ * id can resolve a different one than the card shown.
+ */
+function ApprovalCards({ hitl }: { hitl: HitlState }) {
+  return (
+    <div className="pl-9 max-w-[80%] space-y-3">
+      {hitl.groups.map((group) =>
+        group.requests.map((actionRequest, idx) => (
+          <ApprovalCard
+            key={`${group.id}-${idx}`}
+            actionRequest={actionRequest}
+            reviewConfig={group.reviewConfigs[idx]}
+            onApprove={() => hitl.approve(group.id)}
+            onReject={(reason) => hitl.reject(group.id, idx, reason)}
+            onEdit={(editedArgs) => hitl.edit(group.id, idx, editedArgs)}
+            isProcessing={hitl.isProcessing}
+          />
+        )),
+      )}
+    </div>
   );
 }
