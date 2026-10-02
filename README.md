@@ -29,19 +29,14 @@ packages/agent  Python on LangSmith Deployment
 Anthropic API
 ```
 
-**Next.js does two jobs.** It serves the pages, and a catch-all route handler at
-`/api/langgraph/[...path]` forwards everything to the agent server with the API key
-attached. It is a route handler rather than a `next.config` rewrite for one reason: a
-rewrite cannot add headers, so the key would have to ship to the browser. The result is
-that the client only ever makes same-origin requests and never sees a credential.
+**Next.js does two jobs:** it serves the pages, and it proxies every agent call so the
+API key stays server-side and the browser only ever talks to its own origin.
 
-**One agent deployment, two graphs.** `langgraph.json` registers both; the frontend
-picks one per request with `assistantId`. LangSmith owns the checkpointer and store, so
-the graphs pass neither — conversation history, branches and interrupts are all its
-managed Postgres.
+**One agent deployment serves both chats.** LangSmith owns the checkpointer, so threads,
+branches and pending approvals live in its managed Postgres — which is why a run
+survives a closed tab.
 
-**Both halves redeploy on push.** Vercel builds `packages/web`, LangSmith builds
-`packages/agent` from its `langgraph.json`, out of the same monorepo.
+**Both halves redeploy on push,** from the same monorepo.
 
 ## What is built
 
