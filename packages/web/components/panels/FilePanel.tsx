@@ -18,6 +18,18 @@ import { useState } from "react";
 // the one file the user actually approved.
 const INTERNAL_PREFIXES = ["/large_tool_results/", "/conversation_history/"];
 
+/**
+ * A file value is `{content, encoding, created_at, modified_at}`, but older threads and
+ * other backends have written a bare string, so handle both rather than trusting either.
+ */
+function fileText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object" && typeof (value as { content?: unknown }).content === "string") {
+    return (value as { content: string }).content;
+  }
+  return JSON.stringify(value, null, 2);
+}
+
 export function FilePanel({ files }: { files: Record<string, unknown> }) {
   const [openPath, setOpenPath] = useState<string | null>(null);
   const [showInternal, setShowInternal] = useState(false);
@@ -55,10 +67,7 @@ export function FilePanel({ files }: { files: Record<string, unknown> }) {
             </button>
             {openPath === path && (
               <pre className="mt-1 max-h-64 overflow-auto rounded border border-border bg-surface-secondary p-2 text-[11px] font-mono leading-relaxed text-text-secondary">
-                {/* The shape of a file value is not guaranteed, so never assume string. */}
-                {typeof files[path] === "string"
-                  ? (files[path] as string)
-                  : JSON.stringify(files[path], null, 2)}
+                {fileText(files[path])}
               </pre>
             )}
           </li>

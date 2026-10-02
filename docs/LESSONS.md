@@ -371,6 +371,34 @@ curl -s localhost:2024/threads/<id>/state | python3 -m json.tool | head -20
 - Fixed in `lib/use-hitl.ts`: on each change to the pending set, read `client.threads.getState(threadId)` and drop any group whose task has a `result`.
 - Safe by construction — the filter only removes, and `result` never reverts, so a late or failed check can never hide a live card.
 
+### Sandbox file panel
+
+**A diff baseline kept in page state is lost on every reload — and fails silently.**
+- The reference implementation remembers every file as it was, then compares. That copy lives in React state.
+- On reload the page re-reads the files, has nothing to compare against, adopts the ALREADY EDITED versions as the "before", and shows no changes at all.
+- Nothing errors. The panel just looks like the agent did nothing.
+- Fix: `git init` + a commit in the workspace. `git diff --numstat HEAD` for what changed, `git show HEAD:<path>` for the "before". A commit on the machine cannot be lost by a browser.
+- It also handles created and deleted files, which comparing two maps of contents does badly.
+
+**A subagent's tool calls are NOT in `stream.messages`.**
+- The root list has the supervisor's `task` call, not the coder's `edit_file`.
+- `useToolCalls(stream, subagent)` is the namespaced view; `status === "finished"` means the result landed.
+- But a selector subscription only sees calls that arrive after it mounts, and it cannot mount until the subagent is discovered. A short run finishes before it exists: measured 17.9s, file changed on disk, zero watcher events.
+- So watch the subagent's `status` too — a snapshot needs no subscription, so timing cannot defeat it. Use both: status for correctness, the subscription for live updates during a long run.
+
+**Repeated GETs to the same URL are served from the browser cache.**
+- Live state read through an unchanging URL comes back stale behind a 200, with nothing to indicate why. `cache: "no-store"`.
+
+**Each `execute` is a round trip of about a second, so count them.**
+- Change detection asked five questions in five calls; coming back to the page took 5s before the panel appeared. One shell invocation with marker lines between the sections: 1.0s.
+- Same rule on the client: fetch the tree and the change list in parallel, and file contents only when a file is opened. Downloading the whole workspace up front was only ever needed to diff in the browser.
+
+**`langgraph dev` rejects blocking calls inside async handlers.**
+- A sync SDK client in an async route raises `BlockingError`. `asyncio.to_thread`. A Starlette `TestClient` will not reproduce it.
+
+**Pierre renders into a shadow root.**
+- `element.innerHTML` is empty and the component looks broken; the content is in `element.shadowRoot`.
+
 ### Transitions during a fork
 
 **`isLoading` flickers true → false → true when a fork starts**, because an interrupt is a terminal phase.

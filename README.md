@@ -54,33 +54,37 @@ The agent proposes sending an email and stops. You approve, edit or reject it.
 
 
 
-### `/orchestrate` — a deep agent that plans and delegates
+### `/orchestrate` — a deep agent that plans, delegates and writes code
 
-A Sonnet supervisor writes a plan, hands topics to Haiku workers, and synthesises what
-comes back. File writes stop for approval wherever they happen — including inside a
-worker.
+A Sonnet supervisor writes a plan, hands topics to Haiku workers, and delegates coding to
+a subagent with **a real Linux machine**. Every file write and every shell command stops
+for approval, wherever it happens — including inside a worker.
 
+| Capability | What it does |
+|---|---|
+| Plan panel | The agent's live todo list, from `TodoListMiddleware` |
+| Subagent cards | One per delegation, attached to the turn that delegated it; expand to watch that worker's own messages, tools and reasoning stream |
+| Reasoning traces | Extended thinking rendered for the supervisor and every worker |
+| Sandbox | A per-conversation machine. The coder reads, edits and runs commands on it; nothing is shared between conversations |
+| Approval on `execute` | A shell command is shown to you before it runs. Nothing else in the app has a shell to gate |
+| File tree and diffs | The workspace as the agent changes it, with a source-control view of what this run touched |
+| Approval, nested | A worker's `write_file` raises a card on the page and resumes correctly |
 
-| Capability       | What it does                                                                                                                       |
-| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| Plan panel       | The agent's live todo list, from `TodoListMiddleware`                                                                              |
-| Subagent cards   | One per delegation, attached to the turn that delegated it; expand to watch that worker's own messages, tools and reasoning stream |
-| Reasoning traces | Extended thinking rendered for the supervisor and every worker                                                                     |
-| File panel       | The agent's filesystem, read straight from graph state                                                                             |
-| Approval, nested | A worker's `write_file` raises a card on the page and resumes correctly                                                            |
-
-
-Next: a sandbox-backed coding subagent — a real machine, `execute`, and a file tree
-with diffs.
+The page is a two-column chat until a conversation needs code, then becomes a
+three-column IDE — a code pane that sits empty takes the width the conversation needs.
 
 ## Why it holds up
 
 Every behaviour above is server state, not UI state. Approvals are LangGraph interrupts
-answered by id, branches are real checkpoints, and a run keeps going on the server while
-nobody is watching. The parts that took the most care — resolving several pending
-approvals without ever running an action the user did not click, and keeping per-worker
-streams subscribed only while their card is open — are written up with the measurements
-behind them in `docs/`.
+answered by id, branches are real checkpoints, a run keeps going on the server while
+nobody is watching, and the diff is a git commit on the sandbox rather than a copy the
+browser is holding — so a reload cannot lose it.
+
+That last one is the rule the rest follows from: anything the page has to *remember* is
+something a reload can take away. The parts that took the most care — resolving several
+pending approvals without ever running an action the user did not click, and keeping
+per-worker streams subscribed only while their card is open — are written up with the
+measurements behind them in `docs/`.
 
 ## Stack
 
@@ -91,6 +95,7 @@ behind them in `docs/`.
 | Agent SDK | `@langchain/react` `useStream` + selector hooks, `@langchain/langgraph-sdk` |
 | Agents    | Python 3.12, LangGraph, LangChain, `deepagents` 0.7                         |
 | Models    | Claude Sonnet 5 (supervisor, adaptive thinking), Claude Haiku 4.5 (workers) |
+| Sandbox   | LangSmith Sandboxes — one Linux machine per conversation, 10 min idle / 1 hour to delete |
 | Hosting   | Vercel (web) + LangSmith Deployment (agent), both redeploy on push          |
 | Tooling   | uv (Python), pnpm, Make                                                     |
 

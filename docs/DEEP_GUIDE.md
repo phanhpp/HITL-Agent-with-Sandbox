@@ -596,15 +596,54 @@ can read any file on the machine. Also handle all three sandbox states — runni
 (waking takes up to two minutes), and deleted. Returning an empty list or a 500 for a
 sleeping sandbox looks like a bug rather than an expired machine.
 
-### Work out the diffs yourself
+### Let the machine work out the diffs
 
-Nothing tells you which files changed. Keep a copy of the files from when the user last
-sent a message, and compare. A file that disappeared counts as changed too.
+Nothing tells you which files changed, so you have to establish a "before". The obvious
+way is to keep a copy of every file in the page and compare — and it is worth knowing
+why that is the wrong answer before you write it.
 
-Refresh when the tool **result** arrives, not when the call starts — refreshing on the
-call races the write and you read the old contents. Keep a `useRef(new Set())` of
-already-handled results, because the effect runs again on every streamed token and twice
-more in development.
+A copy held in page state dies on the next reload, and the failure is silent in the worst
+possible way: the page re-reads the files, has nothing to compare against, adopts the
+**already edited** versions as the "before", and shows no changes at all. Nothing errors.
+It simply looks like the agent did nothing.
+
+Put the baseline on the machine instead. At seed time:
+
+```bash
+cd /workspace && git init -q && git add -A && git commit -q -m baseline
+```
+
+Then the page stops remembering and starts asking:
+
+| | |
+|---|---|
+| what changed | `git diff --numstat HEAD`, plus `git ls-files --others` for new files |
+| the "before" of one file | `git show HEAD:<path>` |
+| a new baseline per run | `git add -A && git commit --allow-empty` when the user sends a message |
+
+A commit cannot be lost by a browser. It also handles created and deleted files, which
+comparing two maps of contents does badly, and it is what the user already means by
+"show me the diff".
+
+If the workspace arrived as a real repository, it already has a baseline — only `git
+init` when there is no `.git`.
+
+**Count your round trips.** Each shell call into a sandbox costs roughly a second. Asking
+five questions in five calls made the changed-files panel take five seconds to appear;
+one invocation with marker lines between the sections took one. On the client, fetch the
+tree and the change list in parallel, and fetch a file's contents only when it is opened.
+
+**Refresh when the tool RESULT arrives**, not when the call starts — refreshing on the
+call races the write and you read the old contents. Keep a `useRef(new Set())` of handled
+results, because the effect runs again on every streamed token and twice more in
+development.
+
+**And watch the right stream.** If the writing is done by a subagent, its tool calls are
+not in `stream.messages` at all — that list has the supervisor's `task` call, not the
+coder's `edit_file`. Use `useToolCalls(stream, subagent)`. Then add a second trigger on
+the subagent's own `status`, because a selector subscription only sees calls that arrive
+after it mounts, and on a short run the subagent is discovered and finished before that
+happens.
 
 ### Write real security rules into the prompt
 

@@ -1,25 +1,48 @@
 "use client";
 
-import { Fragment, useMemo, useState } from "react";
-import { useStream } from "@langchain/react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
+import {
+  useStream,
+  useToolCalls,
+  type AnyStream,
+  type SubagentDiscoverySnapshot,
+} from "@langchain/react";
 import { AIMessage, HumanMessage } from "langchain";
 
 import { ASSISTANTS, resolveAgentUrl } from "@/lib/agent";
 import type { DeepAgentState } from "@/lib/state";
 import { useHitl, type HitlState } from "@/lib/use-hitl";
 import { useStopRun } from "@/lib/use-stop-run";
+import { FILE_MUTATING_TOOLS, useSandboxFiles } from "@/lib/use-sandbox-files";
 import type { ChatShellRenderProps } from "@/components/ChatShell";
 import { ApprovalCard } from "@/components/ApprovalCard";
 import { SplitView } from "@/components/layout/SplitView";
+import { IdeView } from "@/components/layout/IdeView";
 import { TodoPanel } from "@/components/panels/TodoPanel";
 import { FilePanel } from "@/components/panels/FilePanel";
+import { SandboxTree } from "@/components/panels/SandboxTree";
+import { ChangedFiles } from "@/components/panels/ChangedFiles";
+/*
+ * Loaded only when a file is opened. `CodeViewer` pulls in @pierre/diffs, which pulls in
+ * Shiki and its grammars — a large chunk that has no business being in the initial
+ * bundle of a page most visitors use purely as a chat.
+ */
+const CodeViewer = dynamic(
+  () => import("@/components/panels/CodeViewer").then((m) => m.CodeViewer),
+  { ssr: false, loading: () => <p className="p-4 text-sm text-text-tertiary">Opening…</p> },
+);
 import { StopIcon } from "@/components/icons";
 import { ChatContainer, ChatInput, PresetPrompts, TypingIndicator } from "@/components/playground";
 import { CoordinatorTurn } from "./CoordinatorTurn";
 
+/** The only subagent with a machine of its own. Matches agents/orchestrator.py. */
+const CODER_SUBAGENT = "coder";
+
 const PRESETS = [
   "Write me a short brief comparing H3 and S2 spatial indexing",
   "Plan and research what makes a good incident postmortem",
+  "A test is failing in /workspace — find the bug, fix it, and run the tests",
 ];
 
 /**
@@ -52,6 +75,8 @@ export function OrchestrateChat({ threadId, onThreadId, onLeave, reconnect }: Ch
    */
   const hitl = useHitl(stream);
   const { stopRun, isStopping } = useStopRun(stream, threadId);
+  const sandbox = useSandboxFiles(threadId);
+  const [viewMode, setViewMode] = useState<"code" | "diff">("code");
 
   const messages = stream.messages;
   const todos = stream.values?.todos ?? [];
@@ -83,7 +108,20 @@ export function OrchestrateChat({ threadId, onThreadId, onLeave, reconnect }: Ch
   const approvalCards =
     pending && !hitl.isProcessing ? <ApprovalCards hitl={hitl} /> : null;
 
+  const { refreshPath, refreshAll } = sandbox;
+
+  /*
+   * Which subagents own a sandbox. Only the coder does — the researchers share the
+   * supervisor's StateBackend, so nothing they write is on a machine.
+   */
+  const sandboxSubagents = useMemo(
+    () => subagents.filter((s) => s.name === CODER_SUBAGENT),
+    [subagents],
+  );
+
   const submit = (text: string) => {
+    // The baseline for every diff is the filesystem as it stood when the user asked.
+    sandbox.takeSnapshot();
     void stream.submit({ messages: [new HumanMessage(text)] });
   };
 
@@ -92,18 +130,64 @@ export function OrchestrateChat({ threadId, onThreadId, onLeave, reconnect }: Ch
   const synthesising =
     isLoading && subagents.length > 0 && subagents.every((s) => s.status !== "running");
 
-  return (
-    <SplitView
-      sidebar={
-        <>
-          <TodoPanel todos={todos} isPlanning={isLoading && todos.length === 0} />
-          <FilePanel files={files} />
-        </>
-      }
-    >
+  /* One mutation handler for every watcher. `write_file`/`edit_file`/`delete` name a
+     single path; `execute` is a shell command that can touch anything, so it re-reads
+     the whole tree. An unexpected argument shape also re-reads everything rather than
+     silently skipping the update. */
+  const onMutation = useCallback(
+    (name: string, args: Record<string, unknown>) => {
+      const path = args.file_path ?? args.path;
+      if (name !== "execute" && typeof path === "string") refreshPath(path);
+      else refreshAll();
+    },
+    [refreshPath, refreshAll],
+  );
+
+  /*
+   * Re-read the sandbox whenever a sandbox-backed subagent changes state.
+   *
+   * This is the backstop, and it is not redundant with SandboxWatcher. The watcher only
+   * sees tool calls that arrive after it mounts, and it cannot mount until the subagent
+   * has been discovered — so a short run, where the coder is discovered and finishes in
+   * the same breath, produces NO watcher events at all. Measured: a 17.9s run edited a
+   * file, the agent reported success, and the panel never moved.
+   *
+   * A snapshot's status needs no subscription, so this fires regardless of timing:
+   * once when the coder appears (which is also what switches the page into IDE mode,
+   * since the machine is created when the graph is built), and again when it finishes.
+   * The watcher still earns its place on a long run by updating during the work rather
+   * than only at the end.
+   */
+  const subagentStates = sandboxSubagents.map((s) => `${s.id}:${s.status}`).join("|");
+  useEffect(() => {
+    if (subagentStates) refreshAll();
+  }, [subagentStates, refreshAll]);
+
+  /* The sandbox decides the layout. A thread that never asked for code has no machine,
+     the tree route answers `sandboxId: null`, and the page stays as it was — an empty
+     code pane is worse than no code pane, and most conversations here never write code. */
+  const isIde = sandbox.sandboxId !== null;
+
+  const selectFile = (path: string) => {
+    sandbox.selectFile(path);
+    // Open on the diff when there is one: for a file the agent just changed, the change
+    // is the thing the user came to look at.
+    setViewMode(sandbox.changedFiles.has(path) ? "diff" : "code");
+  };
+
+  const watchers = sandboxSubagents.map((subagent) => (
+    <SandboxWatcher
+      key={subagent.id}
+      stream={stream}
+      subagent={subagent}
+      onMutation={onMutation}
+    />
+  ));
+
+  const chat = (
       <ChatContainer
         embedded
-        className="max-w-3xl mx-auto w-full"
+        className={isIde ? "w-full" : "max-w-3xl mx-auto w-full"}
         input={
           <div className="space-y-2">
             <ChatInput
@@ -172,8 +256,66 @@ export function OrchestrateChat({ threadId, onThreadId, onLeave, reconnect }: Ch
         )}
 
         {pendingIndex === -1 && approvalCards}
+        {watchers}
       </ChatContainer>
-    </SplitView>
+  );
+
+  const plan = <TodoPanel todos={todos} isPlanning={isLoading && todos.length === 0} />;
+
+  if (!isIde) {
+    return (
+      <SplitView
+        sidebar={
+          <>
+            {plan}
+            <FilePanel files={files} />
+          </>
+        }
+      >
+        {chat}
+      </SplitView>
+    );
+  }
+
+  return (
+    <IdeView
+      files={
+        <>
+          {plan}
+          <SandboxTree
+            tree={sandbox.tree}
+            selectedFile={sandbox.selectedFile}
+            changedFiles={sandbox.changedFiles}
+            expandedDirs={sandbox.expandedDirs}
+            onSelect={selectFile}
+            onToggle={sandbox.toggleDir}
+            isLoading={sandbox.isLoading}
+          />
+          <ChangedFiles changes={sandbox.changes} onSelect={selectFile} />
+          {/* The supervisor's own filesystem is still there and still worth showing, but
+              it is no longer the headline once a real machine is in play. */}
+          <FilePanel files={files} />
+        </>
+      }
+      code={
+        sandbox.selectedFile === null ? null : (
+        <CodeViewer
+          selectedFile={sandbox.selectedFile}
+          content={sandbox.selectedFile ? sandbox.files[sandbox.selectedFile] : undefined}
+          originalContent={
+            sandbox.selectedFile ? sandbox.originalFiles[sandbox.selectedFile] : undefined
+          }
+          isChanged={sandbox.selectedFile ? sandbox.changedFiles.has(sandbox.selectedFile) : false}
+          viewMode={viewMode}
+          onViewModeChange={setViewMode}
+          isLoading={sandbox.isLoading}
+          onClose={sandbox.closeFile}
+        />
+        )
+      }
+    >
+      {chat}
+    </IdeView>
   );
 }
 
@@ -184,6 +326,51 @@ export function OrchestrateChat({ threadId, onThreadId, onLeave, reconnect }: Ch
  * file). Rendering only the first silently hides the others, and answering without an
  * id can resolve a different one than the card shown.
  */
+/**
+ * Watches one sandbox-backed subagent and re-reads its filesystem when it changes it.
+ *
+ * WHY THIS IS NOT AN EFFECT ON `stream.messages`. The official reference watches the root
+ * message list for `ToolMessage`s from file-mutating tools, and that works there because
+ * its agent is a single deep agent — every tool call it makes is at the root. Here the
+ * writing is done by a SUBAGENT, so its `execute` and `edit_file` live in that subagent's
+ * namespace and never appear in `stream.messages`. Measured: the root list showed only
+ * the supervisor's `task` call, and the panel never refreshed.
+ *
+ * `useToolCalls(stream, subagent)` is the namespaced view, and `status === "finished"`
+ * means the result has landed — the same "wait for the result, never the call" rule, which
+ * matters because keying on the call races the write.
+ *
+ * It renders nothing. It exists to hold a subscription, which is why it is scoped to the
+ * coder: those subscriptions are ref-counted, so watching every subagent would keep one
+ * open per researcher for no benefit.
+ */
+function SandboxWatcher({
+  stream,
+  subagent,
+  onMutation,
+}: {
+  stream: AnyStream;
+  subagent: SubagentDiscoverySnapshot;
+  onMutation: (name: string, args: Record<string, unknown>) => void;
+}) {
+  const toolCalls = useToolCalls(stream, subagent);
+  const seen = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    for (const call of toolCalls) {
+      if (call.status !== "finished") continue;
+      if (!FILE_MUTATING_TOOLS.has(call.name)) continue;
+      // Never cleared: call ids are unique, and clearing it would re-fire every
+      // historical write on the next turn.
+      if (seen.current.has(call.callId)) continue;
+      seen.current.add(call.callId);
+      onMutation(call.name, (call.args ?? {}) as Record<string, unknown>);
+    }
+  }, [toolCalls, onMutation]);
+
+  return null;
+}
+
 function ApprovalCards({ hitl }: { hitl: HitlState }) {
   return (
     <div className="pl-9 max-w-[80%] space-y-3">

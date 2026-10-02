@@ -42,10 +42,26 @@ export interface AgentState {
  * correct state. Always read `stream.values?.todos ?? []`.
  *
  * `files` is the StateBackend filesystem. Because it lives in graph state, the file
- * panel is a plain `stream.values` read — no HTTP route and no sandbox. A sandbox
- * backend would NOT populate this (docs/deepagent-guide.md section 8.14).
+ * panel is a plain `stream.values` read — no HTTP route and no sandbox. The coder
+ * subagent has a sandbox backend instead, which does NOT populate this key; its files
+ * come over HTTP (see lib/use-sandbox-files.ts).
+ *
+ * A file VALUE is an object, not a string. Confirmed against a live thread:
+ *
+ *   "files": { "/a.md": { "content": "alpha", "encoding": "utf-8",
+ *                         "created_at": "...", "modified_at": "..." } }
+ *
+ * This was declared `Record<string, string>` for a while, which is why FilePanel used to
+ * print a JSON blob of the metadata where the file was meant to be.
  */
+export interface StateFile {
+  content: string;
+  encoding?: string;
+  created_at?: string;
+  modified_at?: string;
+}
+
 export interface DeepAgentState extends AgentState {
   todos?: Todo[];
-  files?: Record<string, string>;
+  files?: Record<string, StateFile>;
 }

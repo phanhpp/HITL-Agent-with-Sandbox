@@ -18,13 +18,21 @@ Two subagent forms because they do different jobs. A dict subagent can set its o
 be a CompiledSubAgent wrapping an agent built with its own backend.
 """
 
+import os
+
 from langchain.agents.middleware import TodoListMiddleware
 from langchain.chat_models import init_chat_model
 from langchain_core.runnables import RunnableConfig
 from deepagents import CompiledSubAgent, create_deep_agent
 from deepagents.backends import StateBackend
 
-from agents.prompts import ANALYST_PROMPT, RESEARCHER_PROMPT, SUPERVISOR_PROMPT
+from agents.prompts import (
+    ANALYST_PROMPT,
+    CODER_PROMPT,
+    RESEARCHER_PROMPT,
+    SUPERVISOR_PROMPT,
+)
+from agents.sandbox import get_or_create_sandbox_for_thread
 
 # Extended thinking is on for every model so the UI can render reasoning blocks.
 #
@@ -41,25 +49,51 @@ from agents.prompts import ANALYST_PROMPT, RESEARCHER_PROMPT, SUPERVISOR_PROMPT
 # Both confirmed by probe, as is the fact that all three configs below yield
 # `contentBlocks` of `['reasoning', 'text']`.
 
-SUPERVISOR_MODEL = "anthropic:claude-sonnet-5"
-WORKER_MODEL = "anthropic:claude-haiku-4-5"
+# Overridable from the environment so a test run does not have to cost what a real one
+# does. Set ORCHESTRATE_CODER_MODEL=anthropic:claude-haiku-4-5 to exercise the whole
+# delegation path cheaply; the defaults are what the deployment uses.
+SUPERVISOR_MODEL = os.getenv("ORCHESTRATE_SUPERVISOR_MODEL", "anthropic:claude-sonnet-5")
+WORKER_MODEL = os.getenv("ORCHESTRATE_WORKER_MODEL", "anthropic:claude-haiku-4-5")
+# The coder writes multi-file code and drives a shell, which Haiku struggles with.
+# Sonnet rather than Opus because this runs behind a public link.
+CODER_MODEL = os.getenv("ORCHESTRATE_CODER_MODEL", "anthropic:claude-sonnet-5")
+
+# Thinking config is per MODEL FAMILY, not per role, so an override must not keep the
+# role's original config. Sonnet 5 and Opus 4.7+ take the adaptive form; everything
+# earlier takes a token budget and rejects `adaptive` with a hard 400.
+_ADAPTIVE_THINKING = {"type": "adaptive", "display": "summarized"}
+_BUDGET_THINKING = {"type": "enabled", "budget_tokens": 2000}
+
+
+def _thinking_for(model: str) -> dict:
+    """Pick the thinking config a model will actually accept."""
+    return _BUDGET_THINKING if "haiku" in model else _ADAPTIVE_THINKING
 
 
 def _supervisor_model():
-    """Sonnet 5: adaptive thinking, and `summarized` to actually receive it."""
+    """Sonnet 5 by default: adaptive thinking, `summarized` to actually receive it."""
     return init_chat_model(
         SUPERVISOR_MODEL,
-        thinking={"type": "adaptive", "display": "summarized"},
+        thinking=_thinking_for(SUPERVISOR_MODEL),
         max_tokens=8000,
     )
 
 
 def _worker_model():
-    """Haiku 4.5: the pre-4.7 budget form. `max_tokens` must exceed `budget_tokens`."""
+    """Haiku 4.5 by default: budget thinking. `max_tokens` must exceed `budget_tokens`."""
     return init_chat_model(
         WORKER_MODEL,
-        thinking={"type": "enabled", "budget_tokens": 2000},
+        thinking=_thinking_for(WORKER_MODEL),
         max_tokens=8000,
+    )
+
+
+def _coder_model():
+    """Sonnet 5 by default, with room for whole files."""
+    return init_chat_model(
+        CODER_MODEL,
+        thinking=_thinking_for(CODER_MODEL),
+        max_tokens=16000,
     )
 
 
@@ -116,19 +150,38 @@ async def agent(config: RunnableConfig):
         )
     )
 
-    # Phase 3 inserts the sandbox-backed coder here:
+    # The coder: the only subagent with a real machine, and the only one that can run
+    # a shell command. It is a CompiledSubAgent because a dict subagent has no
+    # `backend` key — a different model can be set on a dict, a different filesystem
+    # cannot.
     #
-    #   from agents.sandbox import get_or_create_sandbox_for_thread
-    #   coder = create_deep_agent(
-    #       model=<coder model, its own thinking config>,
-    #       backend=await get_or_create_sandbox_for_thread(thread_id),
-    #       system_prompt=CODER_PROMPT,
-    #       # On the INNER agent, not on CompiledSubAgent: that TypedDict has no
-    #       # interrupt_on key, so passing it there is silently ignored. Verified to
-    #       # still surface at the root tasks[] from here.
-    #       interrupt_on={"execute": True, "write_file": True, "edit_file": True},
-    #   )
-    #   subagents.append(CompiledSubAgent(name="coder", description=..., runnable=coder))
+    # Creating the sandbox is deferred until the graph is built for this thread, which
+    # is the whole reason this module exposes a factory rather than a module-level
+    # graph: one sandbox per conversation, not one shared by everybody.
+    coder = create_deep_agent(
+        model=_coder_model(),
+        backend=await get_or_create_sandbox_for_thread(thread_id),
+        system_prompt=CODER_PROMPT,
+        # On the INNER agent, not on CompiledSubAgent: that TypedDict is only
+        # {name, description, runnable, mode}, so an interrupt_on passed there is
+        # silently ignored.
+        #
+        # `execute` is gated here and nowhere else — the supervisor's StateBackend has
+        # no such tool. This is the approval that matters: a shell command on a real
+        # machine, shown to the user before it runs.
+        interrupt_on={"execute": True, "write_file": True, "edit_file": True},
+    )
+    subagents.append(
+        CompiledSubAgent(
+            name="coder",
+            description=(
+                "Writes and runs code on a real machine with a shell. Use it for "
+                "anything that needs editing a project or running tests. Give it the "
+                "task in plain words; the project lives in /workspace."
+            ),
+            runnable=coder,
+        )
+    )
 
     return create_deep_agent(
         model=_supervisor_model(),

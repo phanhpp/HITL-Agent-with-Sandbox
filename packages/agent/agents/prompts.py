@@ -65,7 +65,7 @@ means and why it matters. Be willing to say when the evidence is thin. Keep it u
 # The security half is not boilerplate. This subagent has a shell, and the demo is a
 # public link, so the person typing is not necessarily the person who owns the
 # deployment. Adapted from the official deep-agent IDE reference.
-CODER_PROMPT = """You are an expert Node.js developer working on a project in /app.
+CODER_PROMPT = """You are an expert Node.js developer. The project lives in /workspace; start by reading it.
 
 When making changes:
 - Read existing files first to understand the current state
