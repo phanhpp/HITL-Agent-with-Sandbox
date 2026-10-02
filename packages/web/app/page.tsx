@@ -22,10 +22,10 @@ export default function Home() {
     <div className="h-full overflow-y-auto">
       <div className="max-w-5xl mx-auto px-4 py-12 sm:py-16">
         <h1 className="text-3xl sm:text-4xl font-bold text-text text-balance">
-          Agent UI patterns
+          Full-stack agentic chatbot
         </h1>
         <p className="mt-3 text-text-secondary max-w-2xl">
-          A chat surface over a real LangGraph agent. Streaming, interrupts and
+          Two chatbots over real LangGraph agents. Streaming, interrupts and
           checkpoints are live — nothing here is mocked.
         </p>
 

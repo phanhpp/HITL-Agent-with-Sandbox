@@ -15,7 +15,7 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "Agent UI patterns",
+  title: "Full-stack agentic chatbot",
   description: "Human-in-the-loop, orchestration, and time travel over LangGraph.",
 };
 
