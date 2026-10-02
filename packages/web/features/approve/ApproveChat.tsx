@@ -322,10 +322,11 @@ function ApprovalCards({ hitl }: { hitl: HitlState }) {
             key={`${group.id}-${idx}`}
             actionRequest={actionRequest}
             reviewConfig={group.reviewConfigs[idx]}
-            onApprove={() => hitl.approve(group.id)}
+            onApprove={() => hitl.approve(group.id, idx)}
             onReject={(reason) => hitl.reject(group.id, idx, reason)}
             onEdit={(editedArgs) => hitl.edit(group.id, idx, editedArgs)}
             isProcessing={hitl.isProcessing}
+            decision={group.decisions[idx]}
           />
         )),
       )}

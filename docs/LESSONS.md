@@ -331,12 +331,25 @@ curl -s localhost:2024/threads/<id>/state | python3 -m json.tool | head -20
 - During a fork, force `false`: a fork replays decisions already made.
 - A real interrupt the forked run raises still appears — pausing *is* a run end, which triggers the refresh that lifts the suppression.
 
-**Several interrupts can be pending at once — never read `stream.interrupt` (singular).**
+**Two gated actions arrive in two different shapes, and both render two cards.**
+
+| What the agent did | Interrupts | `action_requests` each |
+|---|---|---|
+| two subagents, one gated tool each | 2 | 1 |
+| one agent, two gated calls in one message | **1** | **2** |
+
+**Shape 1 — never read `stream.interrupt` (singular).**
 - It is documented as an alias for `interrupts[0]`, "when only one is pending".
-- Two parallel subagents each calling `write_file` is enough to break that assumption.
 - Measured: `/a.md` and `/b.md` both pending → one card shown, for `/b.md` → approving it wrote `/a.md`.
-- Fix: read `stream.interrupts`, render one card per entry, answer with `respondAll({ [id]: response })`.
-- Build each response separately — `decisions` is positional within **one** interrupt.
+- Fix: read `stream.interrupts`, one card per entry, answer with `respondAll({ [id]: response })`.
+- One `respondAll`, never two `respond()` calls — the first resume starts a run, the second has nothing to answer.
+
+**Shape 2 — one interrupt is answered ONCE, with one decision per action.**
+- `decisions` is positional over that interrupt's `action_requests`; there is no way to answer action 0 and leave action 1 open.
+- So filling the array from a single click approves actions the user never clicked. Measured: approving card 1 of 2 wrote both files.
+- Fix: stage each card's decision, send when every action in that interrupt has one. A one-action interrupt still sends on the first click.
+- A decided card must *look* decided, or the page reads as a dead button.
+- `Array.from({length: n}, …)`, never `arr.length = n` — setting `length` leaves sparse holes and `some`/`every` skip holes, so "fully decided" reports true on the first click.
 
 **Read `stream.interrupts`, not `getThread()?.interrupts`.**
 

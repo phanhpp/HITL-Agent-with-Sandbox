@@ -414,36 +414,61 @@ passed — the SDK looks the namespace up from the id. Treat that as one observa
 a guarantee: pass `namespace` explicitly if you are answering an id the client never
 saw, and re-check it before shipping a sandboxed helper.
 
-### A run can pause more than once at a time
+### Two pauses, two different shapes
 
-Two helpers working in parallel, each calling a gated tool, produce **two independent
-pauses**. This is the easiest thing in the whole section to get wrong, and getting it
+Two gated actions can reach the user in two ways, and they are not interchangeable:
+
+| What the agent did | Pauses | Actions in each |
+|---|---|---|
+| two helpers, one gated tool each | **2** | 1 |
+| one agent, two gated calls in one message | **1** | **2** |
+
+Both put two cards on screen, which is why they are so easy to conflate. Getting either
 wrong is worse than having no approval step at all.
 
-`stream.interrupt` (singular) is an alias for `interrupts[0]`. Read it while two pauses
-are open and you render one card, for one of them, while a bare `respond()` answers
-*the other one*. Measured: with `/a.md` and `/b.md` both waiting, the page showed a
-single card for `/b.md`, and approving it wrote `/a.md` — an action the user never saw.
+**Shape 1 — several pauses.** `stream.interrupt` (singular) is an alias for
+`interrupts[0]`. Read it while two pauses are open and you render one card, for one of
+them, while a bare `respond()` answers *the other one*. Measured: with `/a.md` and
+`/b.md` both waiting, the page showed a single card for `/b.md`, and approving it wrote
+`/a.md` — an action the user never saw. So read the plural list and answer by id.
 
-So read the plural list, render one card per entry, and answer by id:
+Also: **one `respondAll`, not two `respond()` calls.** The first resume starts a new run,
+so a second call has no interrupted run left to answer and fails.
+
+**Shape 2 — one pause, several actions.** A pause is answered **once**, with one decision
+per action, all in the same array:
 
 ```tsx
-stream.interrupts.map((entry) => (
-  <ApprovalCard
-    key={entry.id}
-    request={entry.value}
-    onApprove={() => stream.respondAll({ [entry.id]: buildResponse(entry.value) })}
-  />
-));
+await stream.respondAll({ [interruptId]: { decisions: [d0, d1] } });
 ```
 
-Two details that are not optional:
+There is no way to answer action 0 and leave action 1 open — the server resumes the
+whole pause in one command. So if you render a card per action, a single click **cannot**
+be sent on its own. Filling the array with the clicked decision is the trap: the user
+approves one card and every other action in that pause runs too. Measured, with the same
+two-file example.
 
-- **One `respondAll`, not two `respond()` calls.** The first resume starts a new run, so
-  the second has no interrupted run left to answer and fails.
-- **Build each response separately.** A response carries a `decisions` array that lines
-  up *positionally* with that pause's own actions. Two pauses can carry different
-  numbers of actions, so one response reused for both approves things nobody was shown.
+Hold each click instead, and send when the pause is fully decided:
+
+```tsx
+function decide(interruptId, index, decision) {
+  // Array.from, never `arr.length = n` — that leaves sparse HOLES, and `some`/`every`
+  // skip holes, so the test below reports "fully decided" on the first click.
+  const next = Array.from({ length: actions.length }, (_, i) => held[i]);
+  next[index] = decision;
+
+  if (next.some((d) => d === undefined)) return stage(interruptId, next);  // wait
+  return stream.respondAll({ [interruptId]: { decisions: next } });        // send
+}
+```
+
+A one-action pause — the common case — still sends on the first click, because one click
+completes it. Show the decided cards as decided; otherwise a two-action pause reads as a
+dead button, where the user clicks Approve and nothing appears to happen.
+
+The simpler alternative, if per-action Edit/Reject is not worth this: render **one card
+per pause** listing all its actions, with a single Approve/Reject for the whole thing.
+That removes the staging entirely, at the cost of all-or-nothing decisions.
 
 ### Which list of pauses to read
 

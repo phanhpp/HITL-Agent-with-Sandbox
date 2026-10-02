@@ -10,7 +10,20 @@ interface ApprovalCardProps {
   onReject: (reason: string) => void;
   onEdit: (editedArgs: Record<string, unknown>) => void;
   isProcessing: boolean;
+  /**
+   * Set once the user has decided THIS action while a sibling action in the same
+   * interrupt is still undecided. Nothing is sent until every action has a decision,
+   * so without this the card reads as a dead button.
+   */
+  decision?: "approve" | "edit" | "reject";
 }
+
+/** Past tense, because by the time it shows the click has already happened. */
+const DECIDED_LABEL = {
+  approve: "Approved",
+  edit: "Edited",
+  reject: "Rejected",
+} as const;
 
 function formatValue(value: unknown): string {
   if (value === null || value === undefined) return "";
@@ -89,6 +102,7 @@ export function ApprovalCard({
   onReject,
   onEdit,
   isProcessing,
+  decision,
 }: ApprovalCardProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [editedArgs, setEditedArgs] = useState<Record<string, unknown>>(actionRequest.args);
@@ -181,10 +195,14 @@ export function ApprovalCard({
       data-testid="sdk-preview-chat-turn"
     >
       <div className="flex items-center gap-2 px-4 py-2.5 border-b border-border bg-surface-secondary">
-        <ShieldIcon className="h-4 w-4 text-warning" />
+        <ShieldIcon className={`h-4 w-4 ${decision ? "text-text-tertiary" : "text-warning"}`} />
         <span className="text-sm font-medium text-text">Review Required</span>
-        <span className="ml-auto text-[11px] font-medium px-2 py-0.5 rounded-full bg-warning text-white">
-          Awaiting Approval
+        <span
+          className={`ml-auto text-[11px] font-medium px-2 py-0.5 rounded-full text-white ${
+            decision ? "bg-text-tertiary" : "bg-warning"
+          }`}
+        >
+          {decision ? DECIDED_LABEL[decision] : "Awaiting Approval"}
         </span>
       </div>
 
@@ -237,6 +255,12 @@ export function ApprovalCard({
           </div>
         )}
 
+        {decision ? (
+          <p className="text-xs text-text-tertiary">
+            {DECIDED_LABEL[decision]} — waiting on the other action in this request before
+            anything runs.
+          </p>
+        ) : (
         <div className="flex flex-wrap items-center gap-2">
           {showRejectInput ? (
             <>
@@ -296,6 +320,7 @@ export function ApprovalCard({
             </>
           )}
         </div>
+        )}
       </div>
     </div>
   );

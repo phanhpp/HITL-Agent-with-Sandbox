@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { AnyStream } from "@langchain/react";
-import type { ActionRequest, HITLRequest, HITLResponse, ReviewConfig } from "langchain";
+import type { ActionRequest, Decision, HITLRequest, ReviewConfig } from "langchain";
 import { normalizeHitlInterruptPayload } from "@langchain/langgraph-sdk/ui";
 
 /**
@@ -18,12 +18,25 @@ import { normalizeHitlInterruptPayload } from "@langchain/langgraph-sdk/ui";
  * pending, the UI rendered ONE card showing /b.md, and approving it wrote /a.md — the
  * action the user never saw. An approval gate that can do that is worse than none.
  *
- * So: read `stream.interrupts` (plural), render one card per interrupt, and answer by
- * id. Each interrupt also gets its OWN decisions array, because that array is
- * positional and two interrupts can carry different numbers of actions.
+ * So: read `stream.interrupts` (plural), render one card per ACTION, and answer each
+ * interrupt by id.
+ *
+ * AND THE SECOND SHAPE, which the first fix missed. Those two situations are different:
+ *
+ *   two subagents, one gated tool each   -> 2 interrupts x 1 action
+ *   one agent, two gated calls at once   -> 1 interrupt  x 2 actions
+ *
+ * Both render two cards, but an interrupt can only be answered ONCE, with one decision
+ * per action, all together. So a click on one card of a two-action interrupt cannot be
+ * sent on its own. Approving the whole group on the first click is what this hook used
+ * to do, and it ran an action the user never approved.
+ *
+ * Instead each click is STAGED against its action, and the response goes out when every
+ * action in that interrupt has a decision. A one-action interrupt — the common case —
+ * still sends on the first click, because one click completes it.
  */
 
-/** One pending interrupt, with everything a card needs to render and answer it. */
+/** One pending interrupt, with everything its cards need to render and answer it. */
 export interface HitlGroup {
   /** Interrupt id, used to answer this one specifically. */
   id: string;
@@ -31,6 +44,12 @@ export interface HitlGroup {
   requests: ActionRequest[];
   /** Positionally aligned with `requests`. */
   reviewConfigs: ReviewConfig[];
+  /**
+   * What the user has decided so far, positionally aligned with `requests`.
+   * `undefined` means still waiting on that card. Only ever non-empty while an
+   * interrupt carries more than one action — otherwise the first click sends.
+   */
+  decisions: (Decision["type"] | undefined)[];
 }
 
 export interface HitlState {
@@ -38,7 +57,7 @@ export interface HitlState {
   groups: HitlGroup[];
   /** True while a decision is in flight; hide the cards so they cannot be double-sent. */
   isProcessing: boolean;
-  approve: (groupId: string) => void;
+  approve: (groupId: string, index: number) => void;
   reject: (groupId: string, index: number, reason: string) => void;
   edit: (groupId: string, index: number, editedArgs: Record<string, unknown>) => void;
 }
@@ -55,6 +74,9 @@ export interface HitlState {
  */
 /** Stable identity, so resetting to "nothing answered" never re-renders needlessly. */
 const EMPTY_IDS: ReadonlySet<string> = new Set();
+
+/** A pending interrupt before the user's staged decisions are attached. */
+type PendingInterrupt = Omit<HitlGroup, "decisions">;
 
 function normalized(payload: unknown): HITLRequest | undefined {
   if (!payload) return undefined;
@@ -90,7 +112,7 @@ export function useHitl(
    *
    * It needs one correction though, which `answeredIds` below supplies.
    */
-  const groups = useMemo<HitlGroup[]>(() => {
+  const groups = useMemo<PendingInterrupt[]>(() => {
     const stale = approvalPending === false;
     if (stale) return [];
 
@@ -152,13 +174,16 @@ export function useHitl(
     };
   }, [pendingKey, stream]);
 
-  const visible = useMemo(
-    () => (answeredIds.size === 0 ? groups : groups.filter((g) => !answeredIds.has(g.id))),
-    [groups, answeredIds],
-  );
+  /**
+   * One decision per card, held until the whole interrupt can be answered.
+   *
+   * Keyed by interrupt id; each array lines up with that interrupt's `requests`.
+   * A slot stays `undefined` until its card is clicked.
+   */
+  const [staged, setStaged] = useState<Record<string, (Decision | undefined)[]>>({});
 
   /**
-   * Answer ONE interrupt, leaving the others pending.
+   * Record one card's decision, and send as soon as its interrupt is fully decided.
    *
    * Always `respondAll` keyed by id, never a bare `respond()`. A bare respond targets
    * "the newest unresolved" interrupt, which is not necessarily the card the user
@@ -167,59 +192,75 @@ export function useHitl(
    * No `namespace` is passed and none is needed: the SDK resolves it from the id, which
    * is why a subagent's interrupt resumes correctly from here (also verified).
    */
-  const send = useCallback(
-    async (groupId: string, build: (actions: ActionRequest[]) => HITLResponse) => {
+  const decide = useCallback(
+    (groupId: string, index: number, decision: Decision) => {
       const group = groups.find((g) => g.id === groupId);
-      if (!group) return;
-      setIsProcessing(true);
-      try {
-        await stream.respondAll({ [group.id]: build(group.requests) });
-      } finally {
-        setIsProcessing(false);
+      if (!group || index < 0 || index >= group.requests.length) return;
+
+      /* `Array.from`, never `arr.length = n`: setting `length` leaves sparse HOLES, and
+         `some`/`every` skip holes — so the "anything still undecided?" test below would
+         report false on the first click and send a malformed decisions array. */
+      const held = staged[groupId] ?? [];
+      const next = Array.from<unknown, Decision | undefined>(
+        { length: group.requests.length },
+        (_, i) => held[i],
+      );
+      next[index] = decision;
+
+      // Still waiting on a sibling card: hold this one and leave the run paused.
+      if (next.some((d) => d === undefined)) {
+        setStaged((s) => ({ ...s, [groupId]: next }));
+        return;
       }
+
+      setStaged(({ [groupId]: _answered, ...rest }) => rest);
+      setIsProcessing(true);
+      void stream
+        .respondAll({ [groupId]: { decisions: next as Decision[] } })
+        .finally(() => setIsProcessing(false));
     },
-    [groups, stream],
+    [groups, staged, stream],
   );
 
-  /*
-   * The fan-out below is deliberate and easy to "fix" wrongly, and it applies WITHIN
-   * one interrupt:
-   *   REJECT rejects every action in that interrupt.
-   *   EDIT approves all the others in that interrupt.
-   * Other pending interrupts are untouched — they keep their own cards.
+  /**
+   * What each card shows, with the decisions made so far attached.
+   *
+   * A decided card has to look decided — otherwise a two-action interrupt reads as a
+   * dead button: the user clicks Approve, nothing is sent (correctly, the sibling is
+   * undecided), and the page appears to have ignored them.
    */
+  const visible = useMemo<HitlGroup[]>(
+    () =>
+      groups
+        .filter((g) => !answeredIds.has(g.id))
+        .map((g) => ({
+          ...g,
+          decisions: g.requests.map((_, i) => staged[g.id]?.[i]?.type),
+        })),
+    [groups, answeredIds, staged],
+  );
+
   const approve = useCallback(
-    (groupId: string) =>
-      void send(groupId, (actions) => ({
-        decisions: actions.map(() => ({ type: "approve" as const })),
-      })),
-    [send],
+    (groupId: string, index: number) => decide(groupId, index, { type: "approve" }),
+    [decide],
   );
 
   const reject = useCallback(
     (groupId: string, index: number, reason: string) =>
-      void send(groupId, (actions) => ({
-        decisions: actions.map((_, i) => ({
-          type: "reject" as const,
-          message: i === index ? reason || "User rejected" : "Rejected along with other actions",
-        })),
-      })),
-    [send],
+      decide(groupId, index, { type: "reject", message: reason || "User rejected" }),
+    [decide],
   );
 
   const edit = useCallback(
-    (groupId: string, index: number, editedArgs: Record<string, unknown>) =>
-      void send(groupId, (actions) => ({
-        decisions: actions.map((_, i) =>
-          i === index && actions[index]
-            ? {
-                type: "edit" as const,
-                editedAction: { name: actions[index].name, args: editedArgs },
-              }
-            : { type: "approve" as const },
-        ),
-      })),
-    [send],
+    (groupId: string, index: number, editedArgs: Record<string, unknown>) => {
+      const action = groups.find((g) => g.id === groupId)?.requests[index];
+      if (!action) return;
+      decide(groupId, index, {
+        type: "edit",
+        editedAction: { name: action.name, args: editedArgs },
+      });
+    },
+    [decide, groups],
   );
 
   return { groups: visible, isProcessing, approve, reject, edit };
