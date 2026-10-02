@@ -31,9 +31,34 @@ export interface HitlState {
   edit: (index: number, editedArgs: Record<string, unknown>) => void;
 }
 
-/** The action requests of one interrupt payload, or none. */
+/**
+ * The action requests of one interrupt payload, in either casing.
+ *
+ * `stream.interrupt` is camelCase, because useStream normalises it. The thread-level
+ * list from `getThread()?.interrupts` is NOT normalised — its payloads arrive straight
+ * off the wire as `action_requests` / `review_configs`. Verified by dumping a live
+ * payload: `nestedPayloadKeys: "action_requests,review_configs"`.
+ *
+ * Reading only the camelCase name here returns [] for every nested interrupt, which
+ * renders an approval card with no actions and sends `{decisions: []}` on approve.
+ * Nothing caught it because a root interrupt is always present today, so the nested
+ * branch never runs.
+ */
+type WireHITLRequest = {
+  actionRequests?: ActionRequest[];
+  action_requests?: ActionRequest[];
+  reviewConfigs?: ReviewConfig[];
+  review_configs?: ReviewConfig[];
+};
+
 function requestsOf(payload: HITLRequest | undefined): ActionRequest[] {
-  return payload?.actionRequests ?? [];
+  const p = payload as WireHITLRequest | undefined;
+  return p?.actionRequests ?? p?.action_requests ?? [];
+}
+
+function configsOf(payload: HITLRequest | undefined): ReviewConfig[] {
+  const p = payload as WireHITLRequest | undefined;
+  return p?.reviewConfigs ?? p?.review_configs ?? [];
 }
 
 export function useHitl(
@@ -67,11 +92,12 @@ export function useHitl(
 
   const request = rootRequest ?? nestedRequest;
 
+
   // A fork never resolves the interrupt it replayed, so the stream can hold one the
   // thread has no task for. The checkpoint decides; the stream only supplies the body.
   const stale = approvalPending === false;
-  const requests = stale ? [] : (request?.actionRequests ?? []);
-  const reviewConfigs = stale ? [] : (request?.reviewConfigs ?? []);
+  const requests = stale ? [] : requestsOf(request);
+  const reviewConfigs = stale ? [] : configsOf(request);
 
   const send = useCallback(
     async (build: (actionRequests: ActionRequest[]) => HITLResponse) => {
