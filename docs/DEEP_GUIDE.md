@@ -386,13 +386,38 @@ subagents = [CompiledSubAgent(name="coder", description=..., runnable=coder)]
 That independence is the point. A sandboxed helper can require approval for `execute` —
 a tool the coordinator does not even have, because `StateBackend` cannot run commands.
 
-### Either way, the frontend sees it in the usual place
+### Resuming a pause that came from a helper agent
 
-We tested both: a dictionary helper with the rules on the coordinator, and a
-`CompiledSubAgent` with the rules on itself and **nothing** on the coordinator. In both
-cases the pause arrives on `stream.interrupt`, the same place a normal agent's pause
-arrives. You do not need the nested `getThread()?.interrupts` path, and an existing
-approval card works unchanged.
+The official guidance warns that a pause raised inside a sub-graph carries a non-empty
+`namespace`, and that resuming without it is **rejected by the server**:
+
+```tsx
+stream.respond(response, {
+  interruptId: entry.interruptId,
+  namespace: entry.namespace,     // from stream.getThread()?.interrupts
+});
+```
+
+Take that seriously, but know which case you are in — because a dictionary helper is not
+a sub-graph.
+
+**Dictionary helper, rules on the coordinator.** Tested end to end in a browser: the
+coordinator delegated, the helper called `write_file`, an approval card appeared, and
+Approve resumed the run and wrote the file with no error. This works because the
+approval middleware is attached to the **coordinator**, so the pause is raised in the
+coordinator's own graph — not nested at all. Nothing special is needed on resume.
+
+**`CompiledSubAgent` with its own rules.** This one really is a separate graph. We
+confirmed in Python that it raises and resumes, but **have not tested resuming it from a
+browser**. This is the case the warning above is about. Keep a code path that reads
+`stream.getThread()?.interrupts` and passes `interruptId` and `namespace`, and test it
+before shipping a sandboxed helper.
+
+A useful middle ground, and what this repo does: try the root pause first, fall back to
+the thread-level list, and resume the fallback with `respondAll({ [interruptId]: … })`.
+The SDK fills in `namespace` from the id (`StreamRespondOptions`: *"When omitted,
+resolved from `thread.interrupts` / `stream.interrupts` for the given `interruptId`"*),
+so that one call covers both shapes.
 
 `interrupt_on` also accepts more than `True`. Per tool you can set which buttons appear
 (`allowed_decisions`), a description, and a condition (`when`) so a tool only pauses
@@ -529,6 +554,7 @@ Two states worth writing:
 | helpers apologise for missing files | they searched an empty `StateBackend` |
 | `todos` missing from generated types | it is not in the schema; read a running conversation |
 | one version's plan beside another's messages | Edit/Retry enabled without rewinding the panels too |
+| a resume rejected by the server | pause came from a real sub-graph and you omitted its `namespace` |
 
 ---
 
