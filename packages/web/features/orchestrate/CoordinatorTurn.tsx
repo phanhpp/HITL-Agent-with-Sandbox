@@ -22,11 +22,14 @@ export function CoordinatorTurn({
   message,
   subagentsByCallId,
   isLast,
+  awaitingApproval,
 }: {
   stream: AnyStream;
   message: BaseMessage;
   subagentsByCallId: Map<string, SubagentDiscoverySnapshot>;
   isLast: boolean;
+  /** True while an approval is open, so a paused helper is not shown as failed. */
+  awaitingApproval: boolean;
 }) {
   /*
    * This message's tool calls, minus two kinds that would be rendered twice:
@@ -99,7 +102,12 @@ export function CoordinatorTurn({
       {turnSubagents.length > 0 && (
         <div className="ml-3 space-y-2 border-l-2 border-border pl-9">
           {turnSubagents.map((subagent) => (
-            <SubagentCard key={subagent.id} stream={stream} subagent={subagent} />
+            <SubagentCard
+              key={subagent.id}
+              stream={stream}
+              subagent={subagent}
+              awaitingApproval={awaitingApproval}
+            />
           ))}
         </div>
       )}

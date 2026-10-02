@@ -77,9 +77,12 @@ function SubagentToolCallRow({ toolCall }: { toolCall: AssembledToolCall }) {
 export function SubagentCard({
   stream,
   subagent,
+  awaitingApproval = false,
 }: {
   stream: AnyStream;
   subagent: SubagentDiscoverySnapshot;
+  /** True while the page has an approval pending. See `paused` below. */
+  awaitingApproval?: boolean;
 }) {
   // Open while running, folded away once finished. This is not only cosmetic: the
   // body owns ref-counted subscriptions (see SubagentCardBody), so collapsing a
@@ -95,6 +98,20 @@ export function SubagentCard({
   // `taskInput` is the instruction the coordinator actually gave this worker, which is
   // the useful subtitle. (This used to print the namespace, a debug string.)
   const subtitle = subagent.taskInput?.trim();
+
+  /*
+   * A subagent stopped at an approval reports status "error", which is not what
+   * happened — it is waiting, not broken. Showing a red ✕ next to a card whose tool
+   * call is sitting in an approval dialog reads as a failure the user caused.
+   *
+   * Note `subagent.error` is populated on a pause too, so it cannot be used to tell
+   * the two apart — only the page knows an approval dialog is open. The trade-off is
+   * that a helper which genuinely fails while an unrelated approval is pending reads
+   * as waiting; that is rarer, and far less misleading than calling every pause a
+   * failure.
+   */
+  const paused = subagent.status === "error" && awaitingApproval;
+  const displayStatus = paused ? "pending" : subagent.status;
 
   const hasDuration =
     subagent.status === "running" ||
@@ -126,9 +143,10 @@ export function SubagentCard({
               endTime={subagent.completedAt ? +subagent.completedAt : undefined}
             />
           )}
-          {/* SubagentDiscoverySnapshot.status is exactly "running" | "complete" |
-              "error", which StatusBadge already accepts. No mapping needed. */}
-          <StatusBadge status={subagent.status} />
+          <StatusBadge
+            status={displayStatus}
+            label={paused ? "Awaiting approval" : undefined}
+          />
         </span>
       </button>
 
@@ -139,7 +157,7 @@ export function SubagentCard({
               {subtitle}
             </p>
           )}
-          <SubagentCardBody stream={stream} subagent={subagent} />
+          <SubagentCardBody stream={stream} subagent={subagent} paused={paused} />
         </div>
       )}
     </div>
@@ -157,9 +175,11 @@ export function SubagentCard({
 function SubagentCardBody({
   stream,
   subagent,
+  paused,
 }: {
   stream: AnyStream;
   subagent: SubagentDiscoverySnapshot;
+  paused: boolean;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const messages = useMessages(stream, subagent);
@@ -239,6 +259,8 @@ function SubagentCardBody({
             ))}
             <span className="text-xs ml-1">Working…</span>
           </div>
+        ) : paused ? (
+          <p className="text-xs text-text-tertiary m-0">Waiting for your approval…</p>
         ) : subagent.status === "error" ? (
           // The snapshot carries the actual message; a generic sentence wastes it.
           <p className="text-xs text-error m-0">{subagent.error ?? "This subagent failed."}</p>

@@ -21,7 +21,7 @@ be a CompiledSubAgent wrapping an agent built with its own backend.
 from langchain.agents.middleware import TodoListMiddleware
 from langchain.chat_models import init_chat_model
 from langchain_core.runnables import RunnableConfig
-from deepagents import create_deep_agent
+from deepagents import CompiledSubAgent, create_deep_agent
 from deepagents.backends import StateBackend
 
 from agents.prompts import ANALYST_PROMPT, RESEARCHER_PROMPT, SUPERVISOR_PROMPT
@@ -92,6 +92,29 @@ async def agent(config: RunnableConfig):
             ANALYST_PROMPT,
         ),
     ]
+
+    # A CompiledSubAgent, i.e. a separate compiled graph rather than a dict. It carries
+    # its OWN interrupt_on, which a dict subagent cannot. In phase 3 this becomes the
+    # sandbox-backed coder; for now it shares the supervisor's StateBackend so the
+    # nested-interrupt path can be exercised without a sandbox.
+    scribe = create_deep_agent(
+        model=_worker_model(),
+        system_prompt=(
+            "You write files. When asked to save something, call write_file immediately "
+            "with the exact path you were given. Do not ask questions."
+        ),
+        # On the inner agent, NOT on CompiledSubAgent: that TypedDict is only
+        # {name, description, runnable, mode}, so an interrupt_on passed there is
+        # silently ignored.
+        interrupt_on={"write_file": True, "edit_file": True},
+    )
+    subagents.append(
+        CompiledSubAgent(
+            name="scribe",
+            description="Saves text to a file. Give it the exact path and the content.",
+            runnable=scribe,
+        )
+    )
 
     # Phase 3 inserts the sandbox-backed coder here:
     #

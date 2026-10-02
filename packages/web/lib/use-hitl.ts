@@ -31,6 +31,11 @@ export interface HitlState {
   edit: (index: number, editedArgs: Record<string, unknown>) => void;
 }
 
+/** The action requests of one interrupt payload, or none. */
+function requestsOf(payload: HITLRequest | undefined): ActionRequest[] {
+  return payload?.actionRequests ?? [];
+}
+
 export function useHitl(
   stream: AnyStream,
   /**
@@ -69,21 +74,38 @@ export function useHitl(
   const reviewConfigs = stale ? [] : (request?.reviewConfigs ?? []);
 
   const send = useCallback(
-    async (build: () => HITLResponse) => {
+    async (build: (actionRequests: ActionRequest[]) => HITLResponse) => {
       if (!request) return;
       setIsProcessing(true);
       try {
-        const response = build();
         if (rootRequest) {
-          await stream.respond(response);
-        } else if (nested) {
-          // One call for every pending interrupt, keyed by interruptId. Calling
-          // respond() twice fails: the first starts a new run (12's mistake 6).
-          // respond resolves `namespace` from the interrupt list given only the id.
-          await stream.respondAll(
-            Object.fromEntries(nested.map((entry) => [entry.interruptId, response])),
-          );
+          await stream.respond(build(requestsOf(rootRequest)));
+          return;
         }
+        if (!nested) return;
+
+        /*
+         * One call for every pending interrupt. Two separate reasons it has to be
+         * one call, and one reason each response must be built separately:
+         *
+         *  - Calling respond() twice fails. The first resume starts a new run, so
+         *    the second has no interrupted run to answer (GUIDE.md 12, mistake 6).
+         *  - respondAll takes a map of interruptId -> response, and resolves each
+         *    namespace internally from the thread's interrupt list, so ids are all
+         *    we need to supply.
+         *  - Each interrupt carries its OWN action requests, and a decisions array
+         *    is positional. Building one response from the first interrupt and
+         *    sending it to all of them mismatches the moment two helpers pause with
+         *    different numbers of actions — approving things nobody was shown.
+         */
+        await stream.respondAll(
+          Object.fromEntries(
+            nested.map((entry) => [
+              entry.interruptId,
+              build(requestsOf(entry.payload as HITLRequest | undefined)),
+            ]),
+          ),
+        );
       } finally {
         setIsProcessing(false);
       }
@@ -98,31 +120,31 @@ export function useHitl(
    * Changing either changes what the agent does with the actions you did not click.
    */
   const approve = useCallback(
-    () => void send(() => ({ decisions: requests.map(() => ({ type: "approve" as const })) })),
-    [send, requests],
+    () => void send((actions) => ({ decisions: actions.map(() => ({ type: "approve" as const })) })),
+    [send],
   );
 
   const reject = useCallback(
     (index: number, reason: string) =>
-      void send(() => ({
-        decisions: requests.map((_, i) => ({
+      void send((actions) => ({
+        decisions: actions.map((_, i) => ({
           type: "reject" as const,
           message: i === index ? reason || "User rejected" : "Rejected along with other actions",
         })),
       })),
-    [send, requests],
+    [send],
   );
 
   const edit = useCallback(
     (index: number, editedArgs: Record<string, unknown>) =>
-      void send(() => ({
-        decisions: requests.map((_, i) =>
-          i === index
-            ? { type: "edit" as const, editedAction: { name: requests[index].name, args: editedArgs } }
+      void send((actions) => ({
+        decisions: actions.map((_, i) =>
+          i === index && actions[index]
+            ? { type: "edit" as const, editedAction: { name: actions[index].name, args: editedArgs } }
             : { type: "approve" as const },
         ),
       })),
-    [send, requests],
+    [send],
   );
 
   return { requests, reviewConfigs, isProcessing, approve, reject, edit };

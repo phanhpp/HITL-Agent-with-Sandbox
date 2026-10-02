@@ -44,14 +44,11 @@ export function OrchestrateChat({ threadId, onThreadId, onLeave, reconnect }: Ch
   const { isLoading } = stream;
 
   /*
-   * useHitl with no checkpoint gate, and no useBranching on this page.
-   *
-   * Branching is deliberately off here. Nothing else on the page is branch-aware:
-   * TodoPanel, FilePanel and the subagent cards all read `stream.values` /
-   * `stream.subagents`, which are the THREAD's latest state, not the viewed branch. So
-   * switching branches would confidently show another branch's plan. The stale
-   * interrupt that `approvalPending` guards against is created by forking, so with no
-   * fork UI it cannot arise.
+   * No branching on this page. Edit/Retry was built and reverted — see
+   * docs/DEEP_GUIDE.md section 7 for the three defects it produced. In short: the
+   * panels and the approval card read thread-level state, so forking makes them
+   * disagree with the transcript, and one of those disagreements puts the wrong
+   * arguments on an approval card.
    */
   const hitl = useHitl(stream);
   const { stopRun, isStopping } = useStopRun(stream, threadId);
@@ -174,6 +171,7 @@ export function OrchestrateChat({ threadId, onThreadId, onLeave, reconnect }: Ch
               message={message}
               subagentsByCallId={subagentsByCallId}
               isLast={index === messages.length - 1}
+              awaitingApproval={pending}
             />
             {index === pendingIndex && approvalCards}
           </Fragment>
