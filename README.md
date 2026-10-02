@@ -37,30 +37,17 @@ worker.
 | File panel | The agent's filesystem, read straight from graph state |
 | Approval, nested | A worker's `write_file` raises a card on the page and resumes correctly |
 
-Not built yet: a sandbox-backed coding subagent (`execute`, a real machine, a file
-tree + diff panel). The graph is already an `async def agent(config)` factory and
-`langgraph.json` already carries two graphs, so adding it is additive.
+Next: a sandbox-backed coding subagent — a real machine, `execute`, and a file tree
+with diffs.
 
-Branching is deliberately off on `/orchestrate`: the plan and file panels read
-thread-level state, so forking makes them disagree with the transcript. Documented in
-`docs/DEEP_GUIDE.md`.
+## How it is built
 
-### Human-in-the-loop, done properly
-
-The approval gate is the part most worth reading. Two gated actions can reach the user
-in two different shapes, both of which render two cards:
-
-| What the agent did | Interrupts | Actions in each |
-|---|---|---|
-| two workers, one gated tool each | **2** | 1 |
-| one agent, two gated calls in one message | **1** | **2** |
-
-Each needs different handling, and getting either wrong runs an action the user never
-approved — both failure modes were reproduced in a browser before being fixed. The hook
-reads every pending interrupt, renders one card per action, holds each decision until
-its interrupt is fully decided, and answers by interrupt id. See
-`packages/web/lib/use-hitl.ts`, which is commented with the measurements rather than the
-theory.
+Every behaviour above is server state, not UI state. Approvals are LangGraph interrupts
+answered by id, branches are real checkpoints, and a run keeps going on the server while
+nobody is watching. The parts that took the most care — resolving several pending
+approvals without ever running an action the user did not click, and keeping per-worker
+streams subscribed only while their card is open — are written up with the measurements
+behind them in `docs/`.
 
 ## Two processes
 
