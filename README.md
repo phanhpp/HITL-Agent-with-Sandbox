@@ -9,6 +9,40 @@ checkpoint, every subagent a real nested run on the server.
 
 **Live:** https://fullstack-agent-ui.vercel.app
 
+## Architecture
+
+Two processes, deployed separately, that only talk over HTTP.
+
+```
+Browser                         never holds a key, never leaves the origin
+   │  /api/langgraph/...
+   ▼
+packages/web    Next.js 16 on Vercel
+                routes the two chats, and proxies every agent call,
+                injecting the LangSmith key server-side
+   │  https://<id>.us.langgraph.app      (http://127.0.0.1:2024 locally)
+   ▼
+packages/agent  Python on LangSmith Deployment
+                LangGraph server: two graphs, threads, checkpoints,
+                managed Postgres + Redis
+   ▼
+Anthropic API
+```
+
+**Next.js does two jobs.** It serves the pages, and a catch-all route handler at
+`/api/langgraph/[...path]` forwards everything to the agent server with the API key
+attached. It is a route handler rather than a `next.config` rewrite for one reason: a
+rewrite cannot add headers, so the key would have to ship to the browser. The result is
+that the client only ever makes same-origin requests and never sees a credential.
+
+**One agent deployment, two graphs.** `langgraph.json` registers both; the frontend
+picks one per request with `assistantId`. LangSmith owns the checkpointer and store, so
+the graphs pass neither — conversation history, branches and interrupts are all its
+managed Postgres.
+
+**Both halves redeploy on push.** Vercel builds `packages/web`, LangSmith builds
+`packages/agent` from its `langgraph.json`, out of the same monorepo.
+
 ## What is built
 
 ### `/approve` — one agent, one gated tool
@@ -40,7 +74,7 @@ worker.
 Next: a sandbox-backed coding subagent — a real machine, `execute`, and a file tree
 with diffs.
 
-## How it is built
+## Why it holds up
 
 Every behaviour above is server state, not UI state. Approvals are LangGraph interrupts
 answered by id, branches are real checkpoints, and a run keeps going on the server while
@@ -48,28 +82,6 @@ nobody is watching. The parts that took the most care — resolving several pend
 approvals without ever running an action the user did not click, and keeping per-worker
 streams subscribed only while their card is open — are written up with the measurements
 behind them in `docs/`.
-
-## Two processes
-
-They only talk over HTTP.
-
-```
-Browser
-   │  same-origin: /api/langgraph/...
-   ▼
-packages/web   Next.js 16 — pages + a proxy route that injects the API key
-   │  http://127.0.0.1:2024  (local)  |  https://<id>.us.langgraph.app  (deployed)
-   ▼
-packages/agent  Python — LangGraph server: two graphs, threads, checkpoints
-   ▼
-Anthropic API
-```
-
-The proxy is a route handler rather than a `next.config` rewrite because a rewrite
-cannot add headers, so the LangSmith key would have to reach the browser.
-
-The frontend picks a graph per request with `assistantId`, so both pages are served by
-one deployment.
 
 ## Stack
 
