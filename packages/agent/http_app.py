@@ -8,19 +8,24 @@ must never hold. So the agent server reads them and the browser asks the agent s
 Registered in `langgraph.json` as `"http": {"app": "./http_app.py:app"}`, which ships
 them inside the same deployed image as the graphs and keeps the key server-side.
 
-THE ROUTES. The query parameter is `filePath`, not `path`, matching the official
-deep-agent frontend.
+THE ROUTES. One per block. The query parameter is `filePath`, not `path`, matching the
+official deep-agent frontend.
 
-    GET  /sandbox/{thread_id}/tree?filePath=…         the workspace, as a flat list of
-                                                      entries; the UI builds the nesting
-    GET  /sandbox/{thread_id}/file?filePath=…         one file's contents, as it is now
-    GET  /sandbox/{thread_id}/file?…&rev=baseline     the same file BEFORE this run —
-                                                      the left-hand side of a diff
-    GET  /sandbox/{thread_id}/changes                 what differs from the baseline:
-                                                      one entry per file with its status
-                                                      and +/- line counts
-    POST /sandbox/{thread_id}/baseline                commit the workspace, fixing the
-                                                      "before" for the run about to start
+    GET  /sandbox/{thread_id}/tree?filePath=<dir>
+         The workspace as a FLAT list of entries. The browser builds the nesting.
+
+    GET  /sandbox/{thread_id}/file?filePath=<file>
+         One file's contents, as it is right now.
+
+    GET  /sandbox/{thread_id}/file?filePath=<file>&rev=baseline
+         The same file as it was BEFORE this run — the left-hand side of a diff.
+
+    GET  /sandbox/{thread_id}/changes
+         One entry per changed file: its path, whether it was modified, added or
+         deleted, and its +/- line counts. Fills the "Changed" panel and the tree dots.
+
+    POST /sandbox/{thread_id}/baseline
+         Commit the workspace, fixing the "before" for the run about to start.
 
 The last two are why the diff survives a reload. The alternative — the browser keeping
 its own copy of every file to compare against — loses that copy on any reload and then
@@ -33,6 +38,23 @@ THREE RULES HOLD ACROSS ALL OF THEM, each one load-bearing:
     a second command
   - every path is rejected unless it sits inside WORKDIR
   - a GET never creates a sandbox, or anyone can spend money by guessing thread ids
+
+TWO IMPORTS WORTH EXPLAINING, since neither is obvious from its name:
+
+  starlette  The web framework these routes are written in — FastAPI is built on top of
+             it. Used instead of FastAPI because `langgraph-api` already ships Starlette,
+             so this adds no dependency to the deployed image. FastAPI would buy argument
+             validation that two read-only routes do not need.
+
+  shlex      Python's shell-quoting helper. `shlex.quote(s)` wraps a string so the shell
+             reads it as ONE argument instead of parsing it. It matters because the tree
+             is built by running `find` with a path the browser supplied:
+
+                 without:  find /workspace/x; cat /etc/passwd   <- two commands run
+                 with:     find '/workspace/x; cat /etc/passwd' <- one missing filename
+
+             The official reference interpolates `filePath` straight into that command.
+
 """
 
 import asyncio

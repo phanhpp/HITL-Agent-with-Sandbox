@@ -9,14 +9,27 @@ import { usePierreTheme } from "@/lib/use-color-scheme";
 /**
  * The centre column: one file, as code or as a diff.
  *
- * `@pierre/diffs` has been a dependency of this repo for a while and imported nowhere;
- * this is its first use. It renders through Shiki, which is why it needs a theme NAME
- * rather than CSS classes — see lib/use-color-scheme.ts.
+ * WHAT @pierre/diffs IS. A React component library for rendering code and unified diffs
+ * — the syntax-highlighted, line-numbered, collapsible-context view you would recognise
+ * from a pull request. It was already a dependency of this repo and imported nowhere;
+ * this is its first use. Two entry points are needed:
  *
- * `disableWorkerPool` is not optional here. Pierre highlights in a web worker by
- * default, and under Next.js/Turbopack that worker does not resolve — the component
- * renders an empty `<diffs-container>` and reports nothing, which is a very quiet way to
- * show a blank pane. Highlighting on the main thread is fine for files this size.
+ *     @pierre/diffs/react   the components:  <File> for code, <FileDiff> for a diff
+ *     @pierre/diffs         the parser:      parseDiffFromFile(before, after)
+ *
+ * It highlights through Shiki, which takes a theme NAME as a string rather than CSS
+ * classes — so it cannot follow Tailwind's `dark:` and has to be told which scheme is
+ * active. That is all lib/use-color-scheme.ts does.
+ *
+ * It also renders into a SHADOW ROOT. `element.innerHTML` reads as empty when the
+ * component is working perfectly; the content is under `element.shadowRoot`. Worth
+ * knowing before concluding it is broken.
+ *
+ * `disableWorkerPool` turns off Pierre's web-worker highlighting and does the work on
+ * the main thread. It was added while chasing a blank pane that turned out to be the
+ * shadow-root confusion above, so it may not be strictly required — but these files are
+ * small, the main thread is nowhere near busy, and a worker is one more thing to resolve
+ * under Turbopack. Left on deliberately; remove it only with a blank-pane test to hand.
  *
  * The file is named by its BASENAME on purpose. Pierre picks the language from that name,
  * so the extension has to survive; passing the full path works too but puts the whole
