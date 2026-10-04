@@ -8,24 +8,52 @@ must never hold. So the agent server reads them and the browser asks the agent s
 Registered in `langgraph.json` as `"http": {"app": "./http_app.py:app"}`, which ships
 them inside the same deployed image as the graphs and keeps the key server-side.
 
-THE ROUTES. One per block. The query parameter is `filePath`, not `path`, matching the
-official deep-agent frontend.
+THE ROUTES. One per block, with what it actually runs on the machine. The query
+parameter is `filePath`, not `path`, matching the official deep-agent frontend.
 
     GET  /sandbox/{thread_id}/tree?filePath=<dir>
          The workspace as a FLAT list of entries. The browser builds the nesting.
+         No git — one `find`, with .git and node_modules pruned:
+
+             find <dir> \( -name .git -o -name node_modules \) -prune -o \
+                  -printf '%y\t%s\t%p\n' | sort
 
     GET  /sandbox/{thread_id}/file?filePath=<file>
-         One file's contents, as it is right now.
+         One file's contents, as it is right now. No git and no shell — the SDK's
+         `download_files`, which returns raw bytes.
 
     GET  /sandbox/{thread_id}/file?filePath=<file>&rev=baseline
-         The same file as it was BEFORE this run — the left-hand side of a diff.
+         The same file as it was BEFORE this run — the left-hand side of a diff:
+
+             git show HEAD:<path relative to WORKDIR>
 
     GET  /sandbox/{thread_id}/changes
          One entry per changed file: its path, whether it was modified, added or
          deleted, and its +/- line counts. Fills the "Changed" panel and the tree dots.
+         Three questions, but ONE shell invocation (see `_changed_files`):
+
+             git diff --numstat HEAD                     modified, with +/- counts
+             git diff --name-only --diff-filter=D HEAD   deleted
+             git ls-files --others --exclude-standard    added (untracked)
+
+         The untracked list alone then gets `wc -l` per file, because every line of a
+         new file is an addition and that needs no diff at all.
 
     POST /sandbox/{thread_id}/baseline
-         Commit the workspace, fixing the "before" for the run about to start.
+         Commit the workspace, fixing the "before" for the run about to start:
+
+             git add -A
+             git commit --allow-empty -m 'baseline: before agent run'
+             git rev-parse HEAD                            returned as `head`
+
+         `--allow-empty` so an unchanged workspace still moves the baseline forward,
+         instead of leaving the previous run's changes showing as this run's.
+
+Any route that touches git first ensures there is something to diff against, creating
+the repository only when the workspace has none (a cloned or mounted repo already has
+its own HEAD):
+
+    git init && git add -A && git commit -m 'baseline: workspace as seeded'
 
 The last two are why the diff survives a reload. The alternative — the browser keeping
 its own copy of every file to compare against — loses that copy on any reload and then
