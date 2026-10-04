@@ -631,16 +631,33 @@ which comparing two maps of contents does badly.
 
 ### Watch the subagent's stream, not the root one
 
-`stream.messages` holds the supervisor's `task` call — **not** the coder's `edit_file`.
-A subagent's tool calls live in its own namespace, so the refresh has to read
-`useToolCalls(stream, subagent)`.
+`stream.messages` is the **root** conversation. It contains the supervisor's "delegate
+this" call and nothing else about it — the coder's actual `edit_file` happens inside the
+subagent, in its own namespace, and never appears there. Watch only the root list and
+the panel never moves.
 
-That alone is not enough. A selector subscription only sees calls that arrive after it
-mounts, and it cannot mount until the subagent is discovered — a short run finishes
-before that happens. Measured: 17.9s run, file changed on disk, zero watcher events. So
-there are two triggers: the subscription for live updates during long work, and the
-subagent's **status** as the backstop, since a snapshot needs no subscription and timing
-cannot defeat it.
+To see the coder's own tool calls you ask for that namespace:
+
+```tsx
+const toolCalls = useToolCalls(stream, subagent);
+```
+
+`useToolCalls` opens a subscription to that one subagent and keeps it open for as long
+as the component calling it stays mounted. `SandboxWatcher` exists to be that component.
+
+**And that is still not enough on its own.** The subscription only delivers events from
+the moment it opens, and it cannot open until the subagent has been *discovered* — the
+component is not rendered before then. On a short run the coder is discovered and
+finished almost at once, so the subscription starts after everything already happened
+and receives nothing at all. Measured: a 17.9s run edited a file on disk, the agent
+reported success, and the watcher saw zero events.
+
+So the refresh has two triggers, and they cover different cases:
+
+| Trigger | Covers |
+|---|---|
+| `useToolCalls(stream, subagent)` | updates *during* long work, file by file |
+| the subagent's `status` changing | everything else — it is a plain value on a snapshot, so there is no subscription to start too late |
 
 ### Count round trips, on both sides
 

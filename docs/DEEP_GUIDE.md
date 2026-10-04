@@ -638,12 +638,16 @@ call races the write and you read the old contents. Keep a `useRef(new Set())` o
 results, because the effect runs again on every streamed token and twice more in
 development.
 
-**And watch the right stream.** If the writing is done by a subagent, its tool calls are
-not in `stream.messages` at all — that list has the supervisor's `task` call, not the
-coder's `edit_file`. Use `useToolCalls(stream, subagent)`. Then add a second trigger on
-the subagent's own `status`, because a selector subscription only sees calls that arrive
-after it mounts, and on a short run the subagent is discovered and finished before that
-happens.
+**And watch the right stream.** If a helper agent does the writing, its tool calls are
+not in `stream.messages` at all — that list has the coordinator's `task` call, not the
+helper's `edit_file`. `useToolCalls(stream, subagent)` subscribes to that helper's own
+namespace, which is what you want.
+
+Add a second trigger on the helper's `status` as well. The subscription only delivers
+events from the moment it opens, and it cannot open until the helper has been discovered
+and its component rendered — so on a short run the helper is discovered and finished
+before anything is listening, and nothing arrives. A status is a plain value on a
+snapshot, so there is no subscription to start too late.
 
 ### Write real security rules into the prompt
 

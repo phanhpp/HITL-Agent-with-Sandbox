@@ -383,7 +383,7 @@ curl -s localhost:2024/threads/<id>/state | python3 -m json.tool | head -20
 **A subagent's tool calls are NOT in `stream.messages`.**
 - The root list has the supervisor's `task` call, not the coder's `edit_file`.
 - `useToolCalls(stream, subagent)` is the namespaced view; `status === "finished"` means the result landed.
-- But a selector subscription only sees calls that arrive after it mounts, and it cannot mount until the subagent is discovered. A short run finishes before it exists: measured 17.9s, file changed on disk, zero watcher events.
+- But `useToolCalls` only delivers events from the moment it opens, and it cannot open until the subagent is discovered and the component rendered. A short run finishes before anything is listening: measured 17.9s, file changed on disk, zero events.
 - So watch the subagent's `status` too — a snapshot needs no subscription, so timing cannot defeat it. Use both: status for correctness, the subscription for live updates during a long run.
 
 **Repeated GETs to the same URL are served from the browser cache.**
