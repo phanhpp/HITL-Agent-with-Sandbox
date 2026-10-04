@@ -1,88 +1,53 @@
 """HTTP routes behind the sandbox file panel, served alongside the graphs.
 
-WHY THEY EXIST. The supervisor keeps its files in graph state, so the UI reads those
-straight from `stream.values`. The coder's files are different — they live on a real
-machine, reachable only through the sandbox API, which needs a credential the browser
-must never hold. So the agent server reads them and the browser asks the agent server.
+The supervisor keeps its files in graph state, so the UI reads those from
+`stream.values`. The coder's files are on a real machine instead, behind a credential the
+browser must never hold — so the agent server reads them and the browser asks it.
+Registered as `"http": {"app": "./http_app.py:app"}` in `langgraph.json`, which ships
+them in the same image as the graphs.
 
-Registered in `langgraph.json` as `"http": {"app": "./http_app.py:app"}`, which ships
-them inside the same deployed image as the graphs and keeps the key server-side.
+All paths below are prefixed `/sandbox/{thread_id}`. The query parameter is `filePath`,
+not `path`, matching the official deep-agent frontend.
 
-THE ROUTES. One per block, with what it actually runs on the machine. The query
-parameter is `filePath`, not `path`, matching the official deep-agent frontend.
+    GET  /tree?filePath=<dir>
+         The workspace as a FLAT list; the browser nests it. No git — one `find`,
+         pruning .git and node_modules.
 
-    GET  /sandbox/{thread_id}/tree?filePath=<dir>
-         The workspace as a FLAT list of entries. The browser builds the nesting.
-         No git — one `find`, with .git and node_modules pruned:
+    GET  /file?filePath=<f>
+         Its contents now. No git, no shell — the SDK's `download_files`.
 
-             find <dir> \( -name .git -o -name node_modules \) -prune -o \
-                  -printf '%y\t%s\t%p\n' | sort
+    GET  /file?filePath=<f>&rev=baseline
+         Its contents BEFORE this run, for the left of a diff:  git show HEAD:<f>
 
-    GET  /sandbox/{thread_id}/file?filePath=<file>
-         One file's contents, as it is right now. No git and no shell — the SDK's
-         `download_files`, which returns raw bytes.
+    GET  /changes
+         One entry per changed file — status and +/- counts. Three questions in ONE
+         shell call (`_changed_files`):
 
-    GET  /sandbox/{thread_id}/file?filePath=<file>&rev=baseline
-         The same file as it was BEFORE this run — the left-hand side of a diff:
-
-             git show HEAD:<path relative to WORKDIR>
-
-    GET  /sandbox/{thread_id}/changes
-         One entry per changed file: its path, whether it was modified, added or
-         deleted, and its +/- line counts. Fills the "Changed" panel and the tree dots.
-         Three questions, but ONE shell invocation (see `_changed_files`):
-
-             git diff --numstat HEAD                     modified, with +/- counts
+             git diff --numstat HEAD                     modified
              git diff --name-only --diff-filter=D HEAD   deleted
-             git ls-files --others --exclude-standard    added (untracked)
+             git ls-files --others --exclude-standard    added, then `wc -l` each,
+                                                         since every line is an addition
 
-         The untracked list alone then gets `wc -l` per file, because every line of a
-         new file is an addition and that needs no diff at all.
+    POST /baseline
+         Fix the "before" for the run about to start:  git add -A && git commit
+         --allow-empty. Empty commits allowed so an unchanged workspace still moves
+         forward, instead of showing the last run's changes as this run's.
 
-    POST /sandbox/{thread_id}/baseline
-         Commit the workspace, fixing the "before" for the run about to start:
+Git is the baseline because a browser can lose a copy on reload and then silently treat
+already-edited files as the "before"; it cannot lose a commit. Routes that need it run
+`git init` + a commit first, but only when the workspace has no `.git` — a cloned or
+mounted repo already has its own HEAD.
 
-             git add -A
-             git commit --allow-empty -m 'baseline: before agent run'
-             git rev-parse HEAD                            returned as `head`
+Three rules, each load-bearing:
 
-         `--allow-empty` so an unchanged workspace still moves the baseline forward,
-         instead of leaving the previous run's changes showing as this run's.
+  - `shlex.quote` every path that reaches a shell, or `filePath` can carry a second
+    command:  find /workspace/x; cat /etc/passwd  runs two. Quoted, it is one missing
+    filename. The official reference interpolates it raw.
+  - reject any path outside WORKDIR.
+  - never create a sandbox on a GET, or anyone can spend money by guessing thread ids.
 
-Any route that touches git first ensures there is something to diff against, creating
-the repository only when the workspace has none (a cloned or mounted repo already has
-its own HEAD):
-
-    git init && git add -A && git commit -m 'baseline: workspace as seeded'
-
-The last two are why the diff survives a reload. The alternative — the browser keeping
-its own copy of every file to compare against — loses that copy on any reload and then
-silently treats the already-edited files as the "before". A commit on the machine cannot
-be lost by a browser.
-
-THREE RULES HOLD ACROSS ALL OF THEM, each one load-bearing:
-
-  - every path that reaches a shell goes through `shlex.quote`, or `filePath` can carry
-    a second command
-  - every path is rejected unless it sits inside WORKDIR
-  - a GET never creates a sandbox, or anyone can spend money by guessing thread ids
-
-TWO IMPORTS WORTH EXPLAINING, since neither is obvious from its name:
-
-  starlette  The web framework these routes are written in — FastAPI is built on top of
-             it. Used instead of FastAPI because `langgraph-api` already ships Starlette,
-             so this adds no dependency to the deployed image. FastAPI would buy argument
-             validation that two read-only routes do not need.
-
-  shlex      Python's shell-quoting helper. `shlex.quote(s)` wraps a string so the shell
-             reads it as ONE argument instead of parsing it. It matters because the tree
-             is built by running `find` with a path the browser supplied:
-
-                 without:  find /workspace/x; cat /etc/passwd   <- two commands run
-                 with:     find '/workspace/x; cat /etc/passwd' <- one missing filename
-
-             The official reference interpolates `filePath` straight into that command.
-
+Starlette rather than FastAPI because `langgraph-api` already ships it, so this adds
+nothing to the image; FastAPI would buy validation two read-only routes do not need.
 """
 
 import asyncio
