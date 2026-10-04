@@ -1,20 +1,38 @@
-"""Extra HTTP routes served alongside the graphs.
+"""HTTP routes behind the sandbox file panel, served alongside the graphs.
 
-The sandbox filesystem is the one piece of agent state the UI cannot read from
-`stream.values`. The supervisor's `StateBackend` keeps its files in graph state, so
-the existing file panel is a plain state read — but the coder's files live on a real
+WHY THEY EXIST. The supervisor keeps its files in graph state, so the UI reads those
+straight from `stream.values`. The coder's files are different — they live on a real
 machine, reachable only through the sandbox API, which needs a credential the browser
-must never have.
+must never hold. So the agent server reads them and the browser asks the agent server.
 
-So the agent server exposes two read-only routes, registered in `langgraph.json` as
-`"http": {"app": "./http_app.py:app"}`. They ship inside the same deployed image as
-the graphs, which is what keeps the key server-side.
+Registered in `langgraph.json` as `"http": {"app": "./http_app.py:app"}`, which ships
+them inside the same deployed image as the graphs and keeps the key server-side.
 
-Routes match what the official deep-agent frontend calls, down to the query parameter
-being `filePath` rather than `path`:
+THE ROUTES. The query parameter is `filePath`, not `path`, matching the official
+deep-agent frontend.
 
-    GET /sandbox/{thread_id}/tree?filePath=/workspace   -> {"entries": [...], "sandboxId": ...}
-    GET /sandbox/{thread_id}/file?filePath=/workspace/src/router.js -> {"content": "..."}
+    GET  /sandbox/{thread_id}/tree?filePath=…         the workspace, as a flat list of
+                                                      entries; the UI builds the nesting
+    GET  /sandbox/{thread_id}/file?filePath=…         one file's contents, as it is now
+    GET  /sandbox/{thread_id}/file?…&rev=baseline     the same file BEFORE this run —
+                                                      the left-hand side of a diff
+    GET  /sandbox/{thread_id}/changes                 what differs from the baseline:
+                                                      one entry per file with its status
+                                                      and +/- line counts
+    POST /sandbox/{thread_id}/baseline                commit the workspace, fixing the
+                                                      "before" for the run about to start
+
+The last two are why the diff survives a reload. The alternative — the browser keeping
+its own copy of every file to compare against — loses that copy on any reload and then
+silently treats the already-edited files as the "before". A commit on the machine cannot
+be lost by a browser.
+
+THREE RULES HOLD ACROSS ALL OF THEM, each one load-bearing:
+
+  - every path that reaches a shell goes through `shlex.quote`, or `filePath` can carry
+    a second command
+  - every path is rejected unless it sits inside WORKDIR
+  - a GET never creates a sandbox, or anyone can spend money by guessing thread ids
 """
 
 import asyncio
@@ -192,7 +210,11 @@ def _changed_files(backend: LangSmithSandbox) -> list[dict]:
 
 
 async def changes(request: Request) -> JSONResponse:
-    """What the agent has changed since the workspace was baselined."""
+    """What the agent has changed since the workspace was baselined.
+
+    One entry per file: its path, whether it was modified, added or deleted, and its
+    line counts. This is what fills the "Changed" panel and puts the dots on the tree.
+    """
     backend = await asyncio.to_thread(_backend, request.path_params["thread_id"])
     if backend is None:
         return JSONResponse({"files": []})
@@ -222,6 +244,12 @@ async def baseline(request: Request) -> JSONResponse:
 
 
 async def tree(request: Request) -> JSONResponse:
+    """The workspace as a flat list of entries, for the file tree.
+
+    Flat on purpose: the nesting is cheap to build in the browser and awkward to
+    serialise. A thread with no sandbox gets an empty list rather than an error, because
+    most conversations never ask for code.
+    """
     thread_id = request.path_params["thread_id"]
     path = _contained(request.query_params.get("filePath") or WORKDIR)
     if path is None:
@@ -237,6 +265,11 @@ async def tree(request: Request) -> JSONResponse:
 
 
 async def file(request: Request) -> JSONResponse:
+    """One file's contents — now, or as it was before this run.
+
+    `?rev=baseline` returns the version at the baseline commit, which is the left-hand
+    side of the diff. Without it you get the file as it stands.
+    """
     thread_id = request.path_params["thread_id"]
     path = _contained(request.query_params.get("filePath") or "")
     if path is None:
