@@ -21,8 +21,9 @@ reflects what actually runs — see `docs/LESSONS.md` for why.
 6. [Tool-call cards](#6-tool-call-cards)
 7. [Stop](#7-stop)
 8. [Branching: Edit and Retry](#8-branching-edit-and-retry)
-9. [File map](#9-file-map)
-10. [Running and testing](#10-running-and-testing)
+9. [The sandbox panel](#9-the-sandbox-panel-orchestrate)
+10. [File map](#10-file-map)
+11. [Running and testing](#11-running-and-testing)
 
 ---
 
@@ -603,7 +604,63 @@ has discarded.
 
 ---
 
-## 9. File map
+## 9. The sandbox panel (`/orchestrate`)
+
+The coder subagent writes to a real machine, not to graph state, so its files cannot be
+read from `stream.values`. Three things follow from that, and each is the answer to a
+bug that was watched happening.
+
+### The diff baseline belongs on the machine
+
+The obvious design is to keep a copy of every file in the page and compare. Don't. That
+copy lives in React state, so it dies on reload — and the failure is silent in the worst
+way: the page re-reads the files, has nothing to compare against, adopts the **already
+edited** versions as the "before", and shows no changes at all.
+
+The sandbox commits its workspace at seed time instead (`ensure_git_baseline`). The page
+remembers nothing and asks:
+
+| Question | Route |
+|---|---|
+| what changed? | `GET /sandbox/{id}/changes` — `git diff --numstat HEAD` + untracked |
+| what did this file look like before? | `GET /sandbox/{id}/file?rev=baseline` — `git show HEAD:<path>` |
+| make this the new before | `POST /sandbox/{id}/baseline`, on submit |
+
+A commit cannot be lost by a browser, and git gets created and deleted files right,
+which comparing two maps of contents does badly.
+
+### Watch the subagent's stream, not the root one
+
+`stream.messages` holds the supervisor's `task` call — **not** the coder's `edit_file`.
+A subagent's tool calls live in its own namespace, so the refresh has to read
+`useToolCalls(stream, subagent)`.
+
+That alone is not enough. A selector subscription only sees calls that arrive after it
+mounts, and it cannot mount until the subagent is discovered — a short run finishes
+before that happens. Measured: 17.9s run, file changed on disk, zero watcher events. So
+there are two triggers: the subscription for live updates during long work, and the
+subagent's **status** as the backstop, since a snapshot needs no subscription and timing
+cannot defeat it.
+
+### Count round trips, on both sides
+
+Each `execute` into a sandbox costs roughly a second. `/changes` answers every question
+in one shell invocation; asking five separately made the panel appear five seconds late.
+
+On the client, the tree and the change list are fetched **in parallel**, and a file's
+contents only when it is opened. An earlier version downloaded the whole workspace on
+mount — needed only so the browser could diff, which it no longer does — and that is
+what made returning to the page slow.
+
+Three smaller things that cost time to find: repeated GETs to an unchanging URL are
+served from the browser cache, so every sandbox read passes `cache: "no-store"`;
+`langgraph dev` rejects blocking calls inside async handlers, so the sync SDK client goes
+through `asyncio.to_thread`; and `@pierre/diffs` renders into a **shadow root**, so
+`innerHTML` looks empty when the component is working perfectly.
+
+---
+
+## 10. File map
 
 | File | Lines | Role |
 |---|---|---|
@@ -622,13 +679,20 @@ has discarded.
 | `components/BranchSwitcher.tsx` | 50 | `‹ Branch 1/2 ›` control (§8) |
 | `lib/agent.ts` | 41 | SSR-safe URL, graph names |
 | `lib/state.ts` | 45 | `AgentState` for `useStream<T>` |
+| `features/orchestrate/OrchestrateChat.tsx` | — | The deep-agent page, and the layout switch (§9) |
+| `lib/use-sandbox-files.ts` | — | Tree, changes and contents over HTTP (§9) |
+| `components/panels/SandboxTree.tsx` | — | The workspace tree, expansion lifted out of the rows |
+| `components/panels/CodeViewer.tsx` | — | Code / diff tabs, `@pierre/diffs`, lazy-loaded |
+| `components/panels/ChangedFiles.tsx` | — | `M`/`A`/`D` with git's own line counts |
+| `components/layout/IdeView.tsx` | — | Three columns; the middle one only when a file is open |
+| `lib/use-color-scheme.ts` | — | Shiki needs a theme *name*, so it cannot use `dark:` |
 
 Everything under `components/chat/` and `components/cards/` was copied from
 `packages/frontend` with `"use client"` added where needed.
 
 ---
 
-## 10. Running and testing
+## 11. Running and testing
 
 ```bash
 make dev-next        # agent :2024 + web :4200

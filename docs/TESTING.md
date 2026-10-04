@@ -113,6 +113,43 @@ button was black on black.*
 Check every button is readable in light mode, which is the default since nothing sets
 the `.dark` class.
 
+## 8. Sandbox: the file panel and the diff
+
+*Every row below was a real bug. Run these on `/orchestrate`, not `/approve`.*
+
+Set `ORCHESTRATE_CODER_MODEL=anthropic:claude-haiku-4-5` first — the whole path works on
+Haiku and a full run costs a fraction of Sonnet.
+
+| Step | Expect |
+| --- | --- |
+| Ask a research-only question | Page stays two-column. No sandbox created; `/changes` returns `{"files": []}` |
+| Ask the coder to edit one file and create another | Layout switches to three columns when the coder appears, before any tool finishes |
+| While it works | Tree lists the project. **No `.git` directory** — it is pruned at the `find` |
+| After approving the edits | `M src/store.js +2` and `A src/version.js +1` in CHANGED; amber dots on both files **and their parent directory** |
+| Click a changed file | Opens on the **Diff** tab, not Code |
+| **Reload the page** | Changed list and dots are identical. *This is the one that used to fail silently* |
+| Click a file with no changes | No Diff tab at all |
+| Open a file, then close it with `✕` | Code column disappears; the chat takes the width back |
+
+**Short runs are the dangerous case.** A run that finishes in under ~20s used to produce
+no panel update at all, because the watcher subscribes to the subagent's namespace and
+cannot mount until the subagent is discovered. If a change ever fails to appear, check
+that first — not the fetching.
+
+**Cost check after testing.** Each run leaves a machine behind:
+
+```bash
+cd packages/agent && uv run python -c "
+from langsmith.sandbox import SandboxClient
+for s in SandboxClient().list_sandboxes():
+    if s.name.startswith('orchestrate-'): print(s.name, s.status)
+"
+```
+
+They self-delete an hour after going idle, but a long debugging session can leave ten.
+
+---
+
 ---
 
 ## Secrets check before any deploy
