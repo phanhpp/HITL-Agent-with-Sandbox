@@ -73,6 +73,32 @@ for approval, wherever it happens — including inside a worker.
 The page is a two-column chat until a conversation needs code, then becomes a
 three-column IDE — a code pane that sits empty takes the width the conversation needs.
 
+### How the sandbox works
+
+Each conversation gets its own Linux machine, named after its thread id, created when the
+run starts and deleted an hour after it goes idle. Nothing is shared between
+conversations.
+
+The coder is a **separate compiled agent**, not just a named helper, because a helper can
+be given its own model but not its own filesystem — and a different filesystem is the
+whole point. It carries its own approval rules, which is why `execute` is gated there and
+nowhere else: nothing else in the app has a shell.
+
+The browser never talks to the machine, because reaching it needs a credential. The agent
+server reads the files and the page asks the agent server:
+
+```
+browser ──► Next.js proxy ──► agent server ──► the machine
+                              /sandbox/{thread}/tree      the file list
+                              /sandbox/{thread}/file      one file, now or before
+                              /sandbox/{thread}/changes   what this run touched
+```
+
+**The diff is a git commit, not a copy held in the browser.** The workspace is committed
+when the machine is seeded, so "what did this look like before" is `git show HEAD:<file>`
+and "what changed" is `git diff`. The obvious alternative — remember the files in the
+page — loses everything on reload, and then silently reports that nothing changed.
+
 ## Why it holds up
 
 Every behaviour above is server state, not UI state. Approvals are LangGraph interrupts
