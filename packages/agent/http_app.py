@@ -15,7 +15,9 @@ hold, so the agent server does the work and the browser asks it. They share noth
 — different client, different API, different concepts.
 
 Starlette rather than FastAPI because `langgraph-api` already ships it, so this adds
-nothing to the image; FastAPI would buy validation these routes do not need.
+nothing to the image; FastAPI would buy validation these routes do not need. It is still
+declared in `pyproject.toml`: arriving only because the server happens to depend on it
+is not the same as being a dependency, and `uv sync --no-dev` is where that shows.
 """
 
 from starlette.applications import Starlette

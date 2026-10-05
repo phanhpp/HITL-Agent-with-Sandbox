@@ -10,9 +10,13 @@ dependencies = [
     "langgraph",
     "langchain-anthropic",
     "deepagents>=0.7.21",
-    # Arrives transitively with langchain anyway, but http_app.py and agents/feedback.py
-    # import it directly — for the sandbox API, the run tree and create_feedback.
+    # Arrives transitively with langchain anyway, but agents/run_ids.py and
+    # routes/feedback.py import it directly — the run tree, and create_feedback.
     "langsmith",
+    # The deployed image gets starlette via langgraph-api, but routes/ imports it
+    # directly, and a runtime dep that is only present because the SERVER happens to
+    # pull it in is one upgrade away from vanishing. `uv sync --no-dev` proved the gap.
+    "starlette",
 ]
 
 # Local-only. The deployed image already ships langgraph-api, and the CLI is a
