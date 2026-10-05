@@ -6,18 +6,18 @@ browser must never hold — so the agent server reads them and the browser asks 
 Registered as `"http": {"app": "./http_app.py:app"}` in `langgraph.json`, which ships
 them in the same image as the graphs.
 
-All paths below are prefixed `/sandbox/{thread_id}`. The query parameter is `filePath`,
-not `path`, matching the official deep-agent frontend.
+The sandbox paths below are prefixed `/sandbox/{thread_id}`; the thumbs up/down route is
+`/feedback/{thread_id}` and is documented with the others at the end. The query parameter
+is `filePath`, not `path`, matching the official deep-agent frontend.
 
     GET  /tree?filePath=<dir>
-         The workspace as a FLAT list; the browser nests it. No git — one `find`,
-         pruning .git and node_modules.
+         The workspace as a FLAT list; run `find`, exclude .git and node_modules in the file structure
 
     GET  /file?filePath=<f>
          Its contents now. No git, no shell — the SDK's `download_files`.
 
     GET  /file?filePath=<f>&rev=baseline
-         Its contents BEFORE this run, for the left of a diff:  git show HEAD:<f>
+         Its contents BEFORE this run:  git show HEAD:<f>
 
     GET  /changes
          One entry per changed file — status and +/- counts. Three questions in ONE
@@ -32,6 +32,12 @@ not `path`, matching the official deep-agent frontend.
          Fix the "before" for the run about to start:  git add -A && git commit
          --allow-empty. Empty commits allowed so an unchanged workspace still moves
          forward, instead of showing the last run's changes as this run's.
+
+    POST /feedback/{thread_id}
+         A thumbs up or down on one answer. Calls the LangSmith SDK's
+         `create_feedback`, which is why the browser cannot do this itself: it would
+         need the API key. The run ids come from graph state, written by
+         `agents/run_ids.py` as each turn ends.
 
 Git is the baseline because a browser can lose a copy on reload and then silently treat
 already-edited files as the "before"; it cannot lose a commit. Routes that need it run
@@ -52,8 +58,11 @@ nothing to the image; FastAPI would buy validation two read-only routes do not n
 
 import asyncio
 import shlex
+import uuid
 
+from langsmith import AsyncClient
 from langsmith.sandbox import ResourceNotFoundError, SandboxClient
+from langsmith.utils import get_tracer_project
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -315,11 +324,121 @@ async def file(request: Request) -> JSONResponse:
     return JSONResponse({"path": path, "content": content.decode("utf-8", errors="replace")})
 
 
+# The metric name, fixed here rather than taken from the request. A browser-chosen key
+# would let anyone write arbitrary metric names into the workspace.
+FEEDBACK_KEY = "user_score"
+MAX_COMMENT_CHARS = 1000
+
+_feedback_client: AsyncClient | None = None
+_project_id: str | None = None
+
+
+def _get_feedback_client() -> AsyncClient:
+    """One client per process. Constructing it reads LANGSMITH_API_KEY.
+
+    Separate from `_get_client()` above, which returns a SandboxClient — a different API
+    for a different service that happens to share the credential.
+    """
+    global _feedback_client
+    if _feedback_client is None:
+        _feedback_client = AsyncClient()
+    return _feedback_client
+
+
+async def _project_uuid() -> str:
+    """The tracing project's UUID, which `create_feedback` calls `session_id`.
+
+    "Session" is LangSmith's old word for a project, so this is NOT the conversation
+    thread. It is the same value for every user and every thread, which is why one
+    module-level variable is enough: the first vote after a restart pays for one lookup
+    and every vote after it reads the variable.
+
+    The name comes from `get_tracer_project()` rather than os.environ, because
+    HOSTED_LANGSERVE_PROJECT_NAME outranks LANGSMITH_PROJECT — reading the env var
+    directly gives the wrong project on a deployment, which is the one place it matters.
+    """
+    global _project_id
+    if _project_id is None:
+        project = await _get_feedback_client().read_project(
+            project_name=get_tracer_project()
+        )
+        _project_id = str(project.id)
+    return _project_id
+
+
+def _valid_uuid(value: object) -> str | None:
+    """Return `value` if it is a UUID string, else None. The browser supplies these."""
+    if not isinstance(value, str):
+        return None
+    try:
+        uuid.UUID(value)
+    except ValueError:
+        return None
+    return value
+
+
+async def feedback(request: Request) -> JSONResponse:
+    """Record a thumbs up or down against the run that produced an answer.
+
+    The browser sends what happened — which run, which way the thumb pointed — and never
+    where to write it: the metric name and the project are both resolved here. Without
+    that split, a caller could invent metric names or file feedback into another project.
+
+    Known limitation: any well-formed run id is accepted, so this can be pointed at
+    another run in the same workspace. The deployment sits behind access control. To
+    close it properly, check the posted run_id against this thread's own `answer_runs`
+    — the thread id is already in the path for that reason.
+    """
+    thread_id = request.path_params["thread_id"]
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "expected a JSON body"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "expected a JSON object"}, status_code=400)
+
+    run_id = _valid_uuid(body.get("run_id"))
+    if run_id is None:
+        return JSONResponse({"error": "run_id must be a UUID"}, status_code=400)
+    # Defaults to run_id: they are equal for a root run, and sending it is what lets
+    # LangSmith batch and background the write instead of blocking this request.
+    trace_id = _valid_uuid(body.get("trace_id")) or run_id
+
+    # `is True`/`is False` would also pass a bool through `in (0, 1)`, so check the type.
+    score = body.get("score")
+    if isinstance(score, bool) or score not in (0, 1):
+        return JSONResponse({"error": "score must be 0 or 1"}, status_code=400)
+
+    comment = body.get("comment")
+    comment = comment.strip()[:MAX_COMMENT_CHARS] if isinstance(comment, str) else ""
+
+    try:
+        created = await _get_feedback_client().create_feedback(
+            run_id=run_id,
+            trace_id=trace_id,
+            session_id=await _project_uuid(),
+            key=FEEDBACK_KEY,
+            score=score,
+            comment=comment or None,
+            source_info={"thread_id": thread_id, "message_id": body.get("message_id")},
+        )
+    except Exception as error:
+        # A vote that vanishes silently is worse than one that reports a problem: the UI
+        # reverts the button so the user can see it did not take.
+        return JSONResponse(
+            {"error": "could not record feedback", "detail": str(error)},
+            status_code=502,
+        )
+
+    return JSONResponse({"ok": True, "feedbackId": str(created.id)})
+
+
 app = Starlette(
     routes=[
         Route("/sandbox/{thread_id}/tree", tree),
         Route("/sandbox/{thread_id}/file", file),
         Route("/sandbox/{thread_id}/changes", changes),
         Route("/sandbox/{thread_id}/baseline", baseline, methods=["POST"]),
+        Route("/feedback/{thread_id}", feedback, methods=["POST"]),
     ]
 )

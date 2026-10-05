@@ -26,6 +26,7 @@ from langchain_core.runnables import RunnableConfig
 from deepagents import CompiledSubAgent, create_deep_agent
 from deepagents.backends import StateBackend
 
+from agents.run_ids import record_run_id
 from agents.prompts import (
     ANALYST_PROMPT,
     CODER_PROMPT,
@@ -191,7 +192,10 @@ async def agent(config: RunnableConfig):
         backend=StateBackend(),
         # Planning is opt-in as of 0.7. Without this there is no write_todos tool and
         # stream.values.todos never appears. Verified by probe.
-        middleware=[TodoListMiddleware()],
+        # On the OUTER graph only. The CompiledSubAgents are separate compiled graphs
+        # with their own state, so record_run_id cannot fire inside them — which
+        # is what keeps this to one entry per turn rather than one per subagent.
+        middleware=[TodoListMiddleware(), record_run_id],
         system_prompt=SUPERVISOR_PROMPT,
         subagents=subagents,
         # Mutating tools only. Gating ls/read_file/glob/grep would stop the run on

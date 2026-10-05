@@ -120,6 +120,123 @@ curl -s localhost:2024/assistants/<id>/schemas | python3 -m json.tool
 
 ---
 
+## LangSmith feedback (thumbs up/down)
+
+**Three ids, three different places.**
+
+| id | Where it comes from |
+|---|---|
+| `thread_id` | the app already has it (`ChatShell.tsx`) |
+| `run_id` / `trace_id` | `get_current_run_tree()`, inside the graph |
+| `session_id` | `read_project(project_name=rt.session_name).id`, cached per process |
+
+**`session_id` is the tracing project's UUID, not the conversation thread.**
+- `run_trees.py` aliases the field to `project_id`; "session" is LangSmith's old word for a project.
+- `thread_id` and `session_id` *are* interchangeable — but only as the metadata key that groups traces into threads. Different field, same name.
+- Required for run-level feedback; omitting it is deprecated.
+
+**Inside a middleware hook, `get_current_run_tree()` is NOT the turn — use `.trace_id`.**
+- `trace_id == run_id` only for a root run, and an `after_agent` hook is not the root. Its `run_tree.id` is the hook's own child span, which LangSmith names `RecordRunIdMiddleware.after_agent`.
+- Rating that attaches every vote to a middleware node. It succeeds, returns 200, and shows a score in LangSmith — on the wrong run. Verified: `read_run(trace_id)` is `name='human_in_the_loop', parent_run_id=None`; `read_run(run_tree.id)` is the hook.
+- So record `run_tree.trace_id`. Check a new one with `read_run(id).parent_run_id is None` rather than assuming.
+- Send `trace_id` to `create_feedback` as well as `run_id`: it is what makes ingestion batched and backgrounded, so the call does not block the response.
+
+**Resolve the project name through the SDK, never by reading the env var yourself.**
+- Order: `HOSTED_LANGSERVE_PROJECT_NAME` → `LANGSMITH_PROJECT` → `LANGCHAIN_PROJECT` → `LANGSMITH_SESSION` → `"default"`.
+- The hosted name is first *by design*, so a deployment ignores a `LANGSMITH_PROJECT` you set. `os.getenv("LANGSMITH_PROJECT")` is therefore wrong in exactly the environment that matters.
+- Two ways in, same answer: `rt.session_name` inside the graph, `get_tracer_project()` from `langsmith.utils` anywhere else (a route has no run tree). Both walk the chain above.
+
+**The run tree is a contextvar: it exists only inside the graph.**
+- Not in `http_app.py` — a Starlette route runs outside any traced run. Not in the browser.
+- `None` whenever tracing is off. Skip quietly; never break the chat. (On the deployment tracing is on automatically. Whether local `langgraph dev` traces with only `LANGSMITH_API_KEY` set is unverified — check, do not assume either way.)
+- Capture it in an `@after_agent` middleware: one record per turn, and both graphs already take a `middleware=[...]` list.
+
+**Put the run ids in graph state, keyed by message id.** Two reasons.
+
+**1. It survives reload and reopening an old thread.** Held in a `useState` or `useRef`, the ids vanish on refresh. Older AI messages then have no `run_id` to send, so the thumbs either disappear or post to nothing. In state, LangGraph checkpoints them with the thread, and `answer_runs` comes back alongside the message array when the UI loads history.
+
+**2. It pairs the vote with the right run when a turn spans several.** One prompt can be several backend runs: the run that pauses for approval, then the resumed run that finishes the answer. `@after_agent` records `message_id ↔ run_id` at END, so the vote lands on the run that actually produced the text the user is rating — not on whichever run the browser guessed by ordering.
+
+Same rule as the sandbox diff baseline: anything the page must remember is something a reload can take away.
+
+**The middleware produces, the hook bridges, the route writes.** They never call each other — graph state is the handoff and the browser is the courier.
+
+```
+[ BACKEND: TURN ENDS ]
+1. Middleware (run_ids.py) captures { message_id, run_id } at the END node
+   run_id is the TRACE ROOT, not the hook's own span
+2. Middleware writes entry into Graph State -> persisted in checkpoint
+
+        │
+        ▼ (Graph State synced to browser stream)
+
+[ FRONTEND: MESSAGES RENDER ]
+3. runFor(messageId) reads the answer_runs map
+   ├── Found entry?   ─► Renders <FeedbackControls />
+   └── Undefined?     ─► Hides feedback buttons (mid-stream, or not the answer message)
+
+        │
+        ▼ (User clicks Thumbs Up/Down)
+
+[ FRONTEND: VOTE ACTION ]
+4. vote(messageId, score, comment) fires:
+   ├── Gets run_id using runFor()
+   ├── Sets voteFor() status to "pending" (buttons lock)
+   └── POSTs payload to /feedback/{thread_id}
+
+        │
+        ▼ (Next proxy injects X-Api-Key; browser never holds a key)
+
+[ BACKEND: API ROUTE (http_app.py) ]
+5. Receives payload ─► Validates score/UUID ─► Fixes metric name + resolves project UUID
+6. Calls LangSmith SDK create_feedback() with its own LANGSMITH_API_KEY ─► 200 OK
+
+        │
+        ▼
+
+[ FRONTEND: UI RESOLUTION ]
+7. vote() receives response:
+   ├── res.ok              ─► voteFor() status "sent" (solid thumb)
+   └── Network/400 error   ─► voteFor() status "failed" (surfaces retry link)
+```
+
+- **The middleware is the producer.** It is the only thing that can pair a run with a message, because only it runs inside the run.
+- **`useFeedback` is the bridge.** `runFor` says which messages can be rated and where the vote goes; `voteFor` holds nothing but local button status; `vote` packages the two together.
+- **`http_app.py` is the only caller of `create_feedback`.** The middleware is named `agents/run_ids.py` for exactly this reason: it writes down run ids and nothing else. Calling it `feedback.py` invited the assumption that it files the feedback too.
+
+**The browser never holds the key.** The vote POSTs to a server route, for the same reason the agent proxy exists.
+
+```
+┌──────────┐      ┌────────────────────┐      ┌──────────────────┐      ┌───────────┐
+│ Browser  │      │ Next route handler │      │ Agent server     │      │ LangSmith │
+│          │      │ /api/langgraph/*   │      │ http_app.py      │      │ API       │
+└────┬─────┘      └─────────┬──────────┘      └────────┬─────────┘      └─────┬─────┘
+     │                      │                          │                      │
+     │ POST                 │                          │                      │
+     │ /api/langgraph/      │                          │                      │
+     │   feedback/{thread}  │                          │                      │
+     │ {message_id, run_id, │                          │                      │
+     │  trace_id, score,    │                          │                      │
+     │  comment}            │                          │                      │
+     │  NO KEY ────────────►│                          │                      │
+     │                      │ + X-Api-Key              │                      │
+     │                      │   (auth to deployment)   │                      │
+     │                      │ ────────────────────────►│                      │
+     │                      │                          │ validate             │
+     │                      │                          │ resolve project UUID │
+     │                      │                          │ + its own env key    │
+     │                      │                          │ create_feedback ────►│
+     │                      │                          │ ◄────────────────────│
+     │                      │ ◄────────────────────────│                      │
+     │ ◄── 200 {"ok": true} │                          │                      │
+```
+
+- `LANGSMITH_API_KEY` does two unrelated jobs and the browser holds it for neither: the proxy uses it to prove it may talk to the deployment, the agent server uses its own copy to write the feedback.
+- **The browser says what happened, never where to write it.** The feedback key is hardcoded server-side and the project UUID is resolved server-side; taking either from the payload lets a caller write arbitrary metric names, or file into any project in the workspace.
+- What stays open: the route accepts any well-formed run id, so it can be pointed at another run in the same workspace. Close it by checking the posted `run_id` against that thread's own `answer_runs` — the thread id is already in the path.
+
+---
+
 ## Reasoning (extended thinking)
 
 **The config depends on the model, and the wrong one fails two different ways.**

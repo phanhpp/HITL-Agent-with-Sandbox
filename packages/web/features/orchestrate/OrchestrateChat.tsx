@@ -14,6 +14,7 @@ import { ASSISTANTS, resolveAgentUrl } from "@/lib/agent";
 import type { DeepAgentState } from "@/lib/state";
 import { useHitl, type HitlState } from "@/lib/use-hitl";
 import { useStopRun } from "@/lib/use-stop-run";
+import { useFeedback } from "@/lib/use-feedback";
 import { FILE_MUTATING_TOOLS, useSandboxFiles } from "@/lib/use-sandbox-files";
 import type { ChatShellRenderProps } from "@/components/ChatShell";
 import { ApprovalCard } from "@/components/ApprovalCard";
@@ -76,6 +77,8 @@ export function OrchestrateChat({ threadId, onThreadId, onLeave, reconnect }: Ch
   const hitl = useHitl(stream);
   const { stopRun, isStopping } = useStopRun(stream, threadId);
   const sandbox = useSandboxFiles(threadId);
+  // Run ids come from graph state, so the controls survive a reload.
+  const feedback = useFeedback(stream, threadId);
   const [viewMode, setViewMode] = useState<"code" | "diff">("code");
 
   const messages = stream.messages;
@@ -242,6 +245,7 @@ export function OrchestrateChat({ threadId, onThreadId, onLeave, reconnect }: Ch
               subagentsByCallId={subagentsByCallId}
               isLast={index === messages.length - 1}
               awaitingApproval={pending}
+              feedback={feedback}
             />
             {index === pendingIndex && approvalCards}
           </Fragment>

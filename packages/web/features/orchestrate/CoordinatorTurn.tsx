@@ -7,6 +7,8 @@ import type { AnyStream, AssembledToolCall, SubagentDiscoverySnapshot } from "@l
 import { AIBubble, HumanBubble, Markdown, SubagentCard } from "@/components/playground";
 import { ReasoningTrace } from "@/components/chat/ReasoningTrace";
 import { ToolCallCard } from "@/components/ToolCallCard";
+import { FeedbackControls } from "@/components/FeedbackControls";
+import type { Feedback } from "@/lib/use-feedback";
 
 /** Tool calls the page renders better somewhere else than as a raw-argument card. */
 const RENDERED_ELSEWHERE = new Set(["write_todos"]);
@@ -23,6 +25,7 @@ export function CoordinatorTurn({
   subagentsByCallId,
   isLast,
   awaitingApproval,
+  feedback,
 }: {
   stream: AnyStream;
   message: BaseMessage;
@@ -30,6 +33,7 @@ export function CoordinatorTurn({
   isLast: boolean;
   /** True while an approval is open, so a paused helper is not shown as failed. */
   awaitingApproval: boolean;
+  feedback: Feedback;
 }) {
   /*
    * This message's tool calls, minus two kinds that would be rendered twice:
@@ -82,7 +86,7 @@ export function CoordinatorTurn({
   }
 
   return (
-    <div className="space-y-2">
+    <div className="group space-y-2">
       <ReasoningTrace message={message} isStreaming={streaming} />
 
       {text && (
@@ -109,6 +113,18 @@ export function CoordinatorTurn({
               awaitingApproval={awaitingApproval}
             />
           ))}
+        </div>
+      )}
+
+      {/* Last, after the subagent cards, because the rating is on the whole turn — the
+          coordinator's answer and everything it delegated. The agent records a run for
+          exactly one message per turn, so only that one gets a row. */}
+      {feedback.runFor(message.id) && (
+        <div className="pl-9">
+          <FeedbackControls
+            vote={feedback.voteFor(message.id)}
+            onVote={(score, comment) => feedback.vote(message.id!, score, comment)}
+          />
         </div>
       )}
     </div>

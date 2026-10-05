@@ -19,6 +19,8 @@ import { ForkControls, MessageEditor, useFork } from "@/components/ForkControls"
 import { useBranching, type BranchInfo } from "@/lib/use-branching";
 import { BranchSwitcher } from "@/components/BranchSwitcher";
 import { useStopRun } from "@/lib/use-stop-run";
+import { useFeedback, type Feedback } from "@/lib/use-feedback";
+import { FeedbackControls } from "@/components/FeedbackControls";
 import { StopIcon } from "@/components/icons";
 import {
   AIBubble,
@@ -58,6 +60,8 @@ export function ApproveChat({ threadId, onThreadId, onLeave, reconnect }: ChatSh
   // Branch history when idle, live stream while running. See lib/use-branching.ts.
   const messages = branching.selectMessages(stream.messages);
   const { stopRun, isStopping } = useStopRun(stream, threadId);
+  // Run ids come from graph state, so the controls survive a reload.
+  const feedback = useFeedback(stream, threadId);
   const pending = hitl.groups.length > 0;
   const hasMessages = messages.length > 0;
 
@@ -166,6 +170,7 @@ export function ApproveChat({ threadId, onThreadId, onLeave, reconnect }: ChatSh
             activeBranch={branching.activeBranch}
             onSwitchBranch={branching.switchBranch}
             onFork={branching.markFork}
+            feedback={feedback}
           />
           {index === pendingIndex && approvalCards}
         </Fragment>
@@ -187,6 +192,7 @@ function MessageRow({
   activeBranch,
   onSwitchBranch,
   onFork,
+  feedback,
 }: {
   stream: AnyStream;
   message: BaseMessage;
@@ -195,6 +201,7 @@ function MessageRow({
   onSwitchBranch: (branch: string) => void;
   /** Tells the hook to move the view onto the branch this fork creates. */
   onFork: (forkFromId: string) => void;
+  feedback: Feedback;
 }) {
   const forkFrom = branchInfo.parentCheckpointId;
   const siblings = branchInfo.siblingBranches;
@@ -296,6 +303,16 @@ function MessageRow({
             {toolCalls.map((tc) => (
               <ToolCallCard key={tc.callId} toolCall={tc} />
             ))}
+          </div>
+        )}
+        {/* Only where the agent recorded a run for this message, which it does once the
+            turn ends — so this cannot show up mid-answer. */}
+        {feedback.runFor(message.id) && (
+          <div className="pl-9">
+            <FeedbackControls
+              vote={feedback.voteFor(message.id)}
+              onVote={(score, comment) => feedback.vote(message.id!, score, comment)}
+            />
           </div>
         )}
       </div>

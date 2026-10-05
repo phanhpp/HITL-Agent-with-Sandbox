@@ -10,6 +10,9 @@ dependencies = [
     "langgraph",
     "langchain-anthropic",
     "deepagents>=0.7.21",
+    # Arrives transitively with langchain anyway, but http_app.py and agents/feedback.py
+    # import it directly — for the sandbox API, the run tree and create_feedback.
+    "langsmith",
 ]
 
 # Local-only. The deployed image already ships langgraph-api, and the CLI is a

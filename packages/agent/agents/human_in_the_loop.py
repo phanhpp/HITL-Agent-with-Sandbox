@@ -2,6 +2,7 @@ from langchain.chat_models import init_chat_model
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware
 
+from agents.run_ids import record_run_id
 from tools.email import send_email
 
 agent = create_agent(
@@ -22,5 +23,7 @@ agent = create_agent(
                 },
             }
         ),
+        # Pairs each finished run with the answer it produced, so the UI can rate it.
+        record_run_id,
     ],
 )

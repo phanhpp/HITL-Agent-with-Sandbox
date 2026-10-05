@@ -24,11 +24,35 @@
 import type { BaseMessage, Todo } from "langchain";
 
 /**
+ * One answer and the LangSmith run that produced it, written by the agent's
+ * `record_run_id` middleware as each turn ends (packages/agent/agents/run_ids.py).
+ *
+ * This is in graph state rather than a stream event so it survives a reload: the run id
+ * is announced once, live, and a thumbs control on an older message would otherwise have
+ * no run to post to. It also records WHICH message the run produced, which the browser
+ * cannot work out on its own — one prompt can be several runs when a turn pauses for
+ * approval, and only the resumed run writes the answer.
+ */
+export interface AnswerRun {
+  message_id: string;
+  /**
+   * The ROOT run of the turn, not the middleware span that recorded it. Inside an
+   * after_agent hook the "current" run is the hook's own child span, so the agent
+   * deliberately stores the trace root here — that is the run a rating means.
+   */
+  run_id: string;
+}
+
+/**
  * langchain's built-in agent state, and the base of deepagents' DeepAgentState.
  * `messages` is append-only. Used by /approve (human_in_the_loop).
+ *
+ * `answer_runs` is absent until a turn finishes with tracing on, so it is optional and
+ * an empty list is a correct state — same rule as `todos` below.
  */
 export interface AgentState {
   messages: BaseMessage[];
+  answer_runs?: AnswerRun[];
 }
 
 /**
