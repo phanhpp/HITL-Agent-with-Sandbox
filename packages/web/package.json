@@ -6,7 +6,7 @@
     "dev": "next dev --port 4200",
     "build": "next build",
     "start": "next start --port 4200",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "next typegen && tsc --noEmit"
   },
   "dependencies": {
     "@langchain/core": "^1.2.9",

@@ -34,6 +34,10 @@ jobs:
           cache-dependency-path: packages/web/pnpm-lock.yaml
 
       - run: pnpm install --frozen-lockfile
+
+      # The script runs `next typegen` before `tsc`. It has to: `RouteContext` and the
+      # route-literal types are generated into .next/types/, which is gitignored, so a
+      # bare `tsc --noEmit` on a fresh checkout fails on types that exist on your laptop.
       - run: pnpm run typecheck
 
   agent:

@@ -37,6 +37,12 @@ next project. Most fail silently, which is why they cost time.
 - Rewrites `tsconfig.json` on first boot (`jsx: "react-jsx"`, adds `.next/dev/types`).
 - Generates `AGENTS.md` telling you to read `node_modules/next/dist/docs/`. Do it — that is how the `params` change was caught.
 
+**`tsc --noEmit` alone is not a typecheck. Run `next typegen` first.**
+- `RouteContext` and the route-literal types are GENERATED, into `.next/types/`, and reached through `next-env.d.ts`. Neither is in git.
+- So a clean checkout fails with `error TS2304: Cannot find name 'RouteContext'` while your machine passes — your `.next/` is left over from `next dev`.
+- `next dev`, `next build` and `next typegen` each regenerate them; `typegen` is the cheap one, and the `typecheck` script now runs it.
+- Next's docs say to gitignore `next-env.d.ts`, and that is right — but only once something generates the types before `tsc`. Doing one without the other is what broke CI.
+
 ---
 
 ## React
