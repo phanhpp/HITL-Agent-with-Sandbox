@@ -31,5 +31,6 @@ docs/
 # TypeScript build cache
 *.tsbuildinfo
 
-# setuptools build artifact from the editable install
+# setuptools build artifacts
 *.egg-info/
+build/

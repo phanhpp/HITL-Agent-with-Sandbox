@@ -31,4 +31,6 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["agents", "tools"]
+# Explicit, not auto-discovery. A new top-level package must be added here or it
+# is simply absent from the deployed image, and the failure shows up mid-deploy.
+packages = ["agents", "tools", "routes"]

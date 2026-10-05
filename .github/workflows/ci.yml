@@ -62,4 +62,6 @@ jobs:
       # and bad imports — the failures that otherwise surface mid-deploy. No API key
       # is needed, because the models are built inside the graph factory, not at
       # import time.
-      - run: uv run --no-dev python -c "import agents.human_in_the_loop, agents.orchestrator"
+      # http_app too: langgraph.json mounts it, but importing only the graphs would let a
+      # broken route module — or one missing from [tool.setuptools] packages — ship.
+      - run: uv run --no-dev python -c "import agents.human_in_the_loop, agents.orchestrator, http_app"

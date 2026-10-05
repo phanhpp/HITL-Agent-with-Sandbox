@@ -22,8 +22,9 @@ reflects what actually runs — see `docs/LESSONS.md` for why.
 7. [Stop](#7-stop)
 8. [Branching: Edit and Retry](#8-branching-edit-and-retry)
 9. [The sandbox panel](#9-the-sandbox-panel-orchestrate)
-10. [File map](#10-file-map)
-11. [Running and testing](#11-running-and-testing)
+10. [Thumbs up/down](#10-thumbs-updown)
+11. [File map](#11-file-map)
+12. [Running and testing](#12-running-and-testing)
 
 ---
 
@@ -184,6 +185,55 @@ to make `useStream` re-read the server, since it exposes no re-hydrate.
 **Never key that on `threadId`.** It goes `null → id` on the first submit, so the chat
 would rebuild mid-run and lose the stream. This shipped as a bug: the server had a full
 reply, the UI showed nothing.
+
+### Where the two pages diverge
+
+Same four layers, different contents below them.
+
+```
+ApproveChat.tsx                       OrchestrateChat.tsx
+  useStream<AgentState>                 useStream<DeepAgentState>
+  useBranching   <- branching ON        (no branching - see DEEP_GUIDE.md 7)
+  useHitl, useStopRun                   useHitl, useStopRun
+  useFeedback(.., branching.answerRuns) useSandboxFiles, useFeedback(..)
+        |                                     |
+        v                                     v
+  <ChatContainer>                       <SplitView> or <IdeView>
+    one column                            sidebar+chat / 3-pane IDE
+        |                                     |  (switches once a sandbox exists)
+        v                                     v
+  messages.map -> <MessageRow>          messages.map -> <CoordinatorTurn>
+     ^ a local function inside              ^ its own module,
+       ApproveChat.tsx, not exported          features/orchestrate/CoordinatorTurn.tsx
+```
+
+`MessageRow` and `CoordinatorTurn` are the **same slot** — one message each — and
+siblings in role, not in file layout. Both exist as components rather than inline JSX for
+a React reason: hooks cannot be called inside a `.map()`, and each needs per-message ones
+(`useMessageMetadata`, a `useMemo` over tool calls).
+
+What they render:
+
+```
+MessageRow (/approve)              CoordinatorTurn (/orchestrate)
+  <BranchSwitcher>                   <ReasoningTrace>
+  <HumanBubble> / <AIBubble>         <HumanBubble> / <AIBubble>
+  <ForkControls>  Edit / Retry       <ToolCallCard>  xN
+  <ToolCallCard>  xN                 <SubagentCard>  xN
+  <FeedbackControls>                 <FeedbackControls>
+```
+
+| Concern | Lives in | Used by |
+|---|---|---|
+| thread id | `ChatShell` | both |
+| stream | `*Chat.tsx` | one `useStream` per page |
+| branching | `use-branching` | `/approve` only |
+| approvals | `use-hitl` | both |
+| sandbox files | `use-sandbox-files` | `/orchestrate` only |
+| feedback | `use-feedback` | both; `/approve` also passes branch runs |
+
+The panels (`TodoPanel`, `FilePanel`, `SandboxTree`, `CodeViewer`) hang off
+`OrchestrateChat` only — `/approve` has no sidebar at all.
 
 ---
 
@@ -677,7 +727,65 @@ through `asyncio.to_thread`; and `@pierre/diffs` renders into a **shadow root**,
 
 ---
 
-## 10. File map
+## 10. Thumbs up/down
+
+Rating an answer writes a `user_score` to the LangSmith trace that produced it. Two
+pieces, and the split between them is forced by timing.
+
+**The middleware cannot send the feedback.** `agents/run_ids.py` runs at a turn's END
+node and finishes with the run. The vote arrives later — seconds, or after a reload, or
+never — when nothing is executing:
+
+```
+turn starts -> generates text -> END node -> middleware saves run_id -> run over
+                                                                           |
+                                              (seconds, hours, a reload...)
+                                                                           |
+                                                      user clicks thumb ---+
+                                                      nothing is listening
+```
+
+Nor can the vote come in through a graph endpoint: every one of those *starts a run*, so
+logging one metric would spin up the whole agent.
+
+So the middleware only writes down **which run produced which answer**, into graph state
+(`answer_runs`). An HTTP route does the rest, on demand.
+
+**Why `http_app.py`.** `langgraph.json` accepts one app, not a list —
+`"http": {"app": "./http_app.py:app"}`. Every custom route must hang off that single
+Starlette object. But only the object is constrained, not the layout, so the routes live
+in their own modules and `http_app.py` is just the mount point:
+
+```
+packages/agent/
+├── routes/
+│   ├── sandbox_files.py   the coder's machine: tree, file, changes, baseline
+│   └── feedback.py        POST a vote, GET votes already recorded
+└── http_app.py            imports both, builds one Starlette app
+```
+
+```python
+app = Starlette(routes=[*sandbox_files.routes, *feedback.routes])
+```
+
+A new top-level package here must also be added to `[tool.setuptools] packages` in
+`pyproject.toml`, which is an explicit list — otherwise it is absent from the deployed
+image and fails mid-deploy.
+
+**The three roles:**
+
+| | Runs | Does |
+|---|---|---|
+| `agents/run_ids.py` | automatically, each turn | stores `{message_id, run_id}` in graph state |
+| `routes/feedback.py` | on demand, on a click | validates the vote, calls `create_feedback` |
+| `http_app.py` | at import | glues the route modules into one entry point |
+
+Details of the browser half — `runFor`, `voteFor`, the reload behaviour and the
+branch-switch trap — are in `docs/LESSONS.md`.
+
+---
+
+## 11. File map
 
 | File | Lines | Role |
 |---|---|---|
@@ -703,13 +811,19 @@ through `asyncio.to_thread`; and `@pierre/diffs` renders into a **shadow root**,
 | `components/panels/ChangedFiles.tsx` | — | `M`/`A`/`D` with git's own line counts |
 | `components/layout/IdeView.tsx` | — | Three columns; the middle one only when a file is open |
 | `lib/use-color-scheme.ts` | — | Shiki needs a theme *name*, so it cannot use `dark:` |
+| `lib/use-feedback.ts` | 154 | Run lookup, vote, reload-safe button state (§10) |
+| `components/FeedbackControls.tsx` | 111 | The thumbs row and the note box (§10) |
+| `packages/agent/agents/run_ids.py` | 99 | Middleware: pairs each answer with its run (§10) |
+| `packages/agent/routes/feedback.py` | 183 | `create_feedback`, and votes already recorded (§10) |
+| `packages/agent/routes/sandbox_files.py` | 319 | The sandbox routes, split out of `http_app.py` (§9) |
+| `packages/agent/http_app.py` | 25 | Mount point: one Starlette app for `langgraph.json` (§10) |
 
 Everything under `components/chat/` and `components/cards/` was copied from
 `packages/frontend` with `"use client"` added where needed.
 
 ---
 
-## 11. Running and testing
+## 12. Running and testing
 
 ```bash
 make dev-next        # agent :2024 + web :4200

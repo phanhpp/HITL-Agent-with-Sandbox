@@ -61,7 +61,9 @@ export function ApproveChat({ threadId, onThreadId, onLeave, reconnect }: ChatSh
   const messages = branching.selectMessages(stream.messages);
   const { stopRun, isStopping } = useStopRun(stream, threadId);
   // Run ids come from graph state, so the controls survive a reload.
-  const feedback = useFeedback(stream, threadId);
+  // branching.answerRuns, not just stream.values: the tip's values describe only the
+  // branch you are on, so without it a switch back loses that branch's thumbs.
+  const feedback = useFeedback(stream, threadId, branching.answerRuns);
   const pending = hitl.groups.length > 0;
   const hasMessages = messages.length > 0;
 

@@ -12,7 +12,7 @@
  * So this hook does two small things: look up the run for a message, and POST the vote.
  */
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { resolveAgentUrl } from "@/lib/agent";
 import type { AnswerRun } from "@/lib/state";
@@ -37,9 +37,20 @@ export interface Feedback {
    something a cache should answer. */
 const NO_STORE: RequestInit = { cache: "no-store" };
 
+/* Module-level, not a `= []` default argument. A default literal is a NEW array every
+   render, which would change the memo's dependency every render, rebuild the run map,
+   and re-fire the vote fetch in a loop on any page that omits the argument. */
+const NO_RUNS: AnswerRun[] = [];
+
 export function useFeedback(
   stream: { values?: { answer_runs?: AnswerRun[] } },
   threadId: string | null,
+  /**
+   * Runs from every branch, via useBranching. `stream.values` only ever describes the
+   * branch tip, so without this the thumbs vanish when you switch back to an older
+   * branch — the transcript shows one branch while the values describe another.
+   */
+  branchRuns: AnswerRun[] = NO_RUNS,
 ): Feedback {
   const [base] = useState(resolveAgentUrl);
   const [votes, setVotes] = useState<Record<string, Vote>>({});
@@ -47,12 +58,51 @@ export function useFeedback(
   const runs = useMemo(() => {
     const byMessage = new Map<string, AnswerRun>();
     /* Insertion order matters: a resumed run can record the same message again, and the
-       later entry is the one that finished the turn. */
-    for (const run of stream.values?.answer_runs ?? []) {
+       later entry is the one that finished the turn. Branch history first, so a live
+       value for the same message wins. */
+    for (const run of [...branchRuns, ...(stream.values?.answer_runs ?? [])]) {
       if (run?.message_id) byMessage.set(run.message_id, run);
     }
     return byMessage;
-  }, [stream.values?.answer_runs]);
+  }, [stream.values?.answer_runs, branchRuns]);
+
+  /*
+   * Votes already in LangSmith. Without this a reload shows the buttons unvoted, and
+   * clicking again writes a second row on the same run.
+   *
+   * Only fills messages with no local vote: ingestion is backgrounded, so a fetch right
+   * after voting can legitimately not see it yet, and overwriting would flip a "sent"
+   * button back to empty.
+   */
+  useEffect(() => {
+    const ids = [...runs.values()].map((r) => r.run_id);
+    if (!threadId || ids.length === 0) return;
+    let cancelled = false;
+
+    void fetch(
+      `${base}/feedback/${encodeURIComponent(threadId)}/votes?run_ids=${ids.join(",")}`,
+      NO_STORE,
+    )
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { votes?: Record<string, { score: 0 | 1 }> } | null) => {
+        if (cancelled || !data?.votes) return;
+        setVotes((current) => {
+          const next = { ...current };
+          for (const [messageId, run] of runs) {
+            const recorded = data.votes?.[run.run_id];
+            if (recorded && !next[messageId]) {
+              next[messageId] = { score: recorded.score, status: "sent" };
+            }
+          }
+          return next;
+        });
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, [base, threadId, runs]);
 
   const runFor = useCallback(
     (messageId: string | undefined) => (messageId ? runs.get(messageId) : undefined),

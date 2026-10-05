@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
+import type { AnswerRun } from "@/lib/state";
 import { useChannel, type AnyStream } from "@langchain/react";
 import { getBranchContext } from "@langchain/langgraph-sdk/ui";
 import { coerceMessageLikeToMessage, type BaseMessageLike } from "@langchain/core/messages";
@@ -319,6 +321,28 @@ export function useBranching(stream: AnyStream, threadId: string | null) {
     setActiveBranch(branch === "main" ? "" : branch);
   }, []);
 
+  /**
+   * Every answer/run pair seen on ANY branch, not just the one at the thread head.
+   *
+   * `stream.values` always describes the branch tip, so a page reading it loses the
+   * thumbs the moment you switch back to an older branch — the transcript shows branch
+   * 1 while the values describe branch 2. The same mismatch that keeps /orchestrate off
+   * branching (docs/DEEP_GUIDE.md section 7).
+   *
+   * A union is safe: entries for messages that are not on the viewed branch are simply
+   * never looked up.
+   */
+  const answerRuns = useMemo(() => {
+    const byMessage = new Map<string, AnswerRun>();
+    for (const state of history) {
+      const runs = (state.values as { answer_runs?: AnswerRun[] } | undefined)?.answer_runs;
+      for (const run of runs ?? []) {
+        if (run?.message_id) byMessage.set(run.message_id, run);
+      }
+    }
+    return [...byMessage.values()];
+  }, [history]);
+
   return {
     /**
      * What to render. Live messages while streaming — branch history lags until the
@@ -344,6 +368,8 @@ export function useBranching(stream: AnyStream, threadId: string | null) {
     approvalPending,
     /** Call right before submitting a fork so the view follows the new branch. */
     markFork,
+    /** Run ids from every branch, for the feedback controls. */
+    answerRuns,
   };
 }
 
