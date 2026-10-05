@@ -780,6 +780,10 @@ image and fails mid-deploy.
 | `routes/feedback.py` | on demand, on a click | validates the vote, calls `create_feedback` |
 | `http_app.py` | at import | glues the route modules into one entry point |
 
+`runFor` is defined in `lib/use-feedback.ts` and called during render in the per-message
+component of each route — `MessageRow` inside `ApproveChat.tsx`, and `CoordinatorTurn.tsx`
+— as `runFor(message.id)`, which gates whether `<FeedbackControls />` renders at all.
+
 Details of the browser half — `runFor`, `voteFor`, the reload behaviour and the
 branch-switch trap — are in `docs/LESSONS.md`.
 
@@ -891,3 +895,9 @@ Reference: `/Users/dangphuonganh/dev/join-rejoin/packages/frontend/src/patterns/
 - `GUIDE.md` 8.4 — time travel UI (the data is already fetched in §8)
 - `/orchestrate` — deep agent, subagent cards, sandbox panel
 - Deployment to Vercel + LangSmith
+- **Changing a vote.** A thumb is final once recorded: the buttons lock, and after a
+  reload they come back locked from LangSmith. Re-voting needs a deliberate path, not
+  just unlocking them — `create_feedback` DEDUPES a repeated `feedback_id` instead of
+  overwriting, so the new score is dropped while the write still reports success
+  (verified). So it wants either `update_feedback` on the existing row, or a new row plus
+  a rule that the newest wins.
