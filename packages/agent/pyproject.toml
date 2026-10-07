@@ -26,6 +26,13 @@ dev = [
     "langgraph-cli[inmem]",
     "langgraph-api>=0.9.0",
 ]
+# Deliberately its own group, not part of `dev`: CI's import check runs --no-dev to
+# prove the DEPLOYED set is complete, and the tests must not be able to satisfy an
+# import the deployed image would be missing.
+test = [
+    "pytest",
+    "pytest-asyncio",
+]
 
 # uv mode requires an installable package -- `tool.uv.package = false` is rejected
 # with "so it cannot be deployed". `agents/` and `tools/` each got an __init__.py so
@@ -38,3 +45,12 @@ build-backend = "setuptools.build_meta"
 # Explicit, not auto-discovery. A new top-level package must be added here or it
 # is simply absent from the deployed image, and the failure shows up mid-deploy.
 packages = ["agents", "tools", "routes"]
+
+# `asyncio_mode = "auto"` so an `async def test_` needs no decorator. The routes are
+# async, so most tests here are.
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+# `langgraph.json` puts the package root on the path for the server; pytest does not,
+# so `import http_app` / `import routes...` would fail without this.
+pythonpath = ["."]

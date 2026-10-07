@@ -67,7 +67,10 @@ def _contained(path: str) -> str | None:
     textual on purpose: there is no local filesystem to resolve against, and the
     sandbox would happily read /etc/shadow if asked.
     """
-    if not path or "\\x00" in path:
+    # "\x00", not "\\x00". The latter is the four-character sequence, which let a real
+    # NUL byte through and rejected the literal text instead — backwards, and it stood
+    # until a test was written for it.
+    if not path or "\x00" in path:
         return None
     # Reject before normalising, not after: a caller has no legitimate reason to send
     # a relative segment, and accepting one means reasoning about how the remote

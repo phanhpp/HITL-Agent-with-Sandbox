@@ -3,7 +3,7 @@ ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 # packages/agent is a uv project, so its venv lives beside its pyproject.toml.
 VENV := $(ROOT)/packages/agent/.venv/bin/python
 
-.PHONY: install dev dev-web dev-agent dev-frontend dev-next typecheck
+.PHONY: install dev dev-web dev-agent dev-frontend dev-next typecheck test test-agent test-web test-e2e
 
 # Installs the agent (uv, from uv.lock) and both frontends.
 install:
@@ -36,3 +36,19 @@ dev-web:
 
 typecheck:
 	cd "$(ROOT)/packages/web" && pnpm run typecheck
+
+# Unit tests only: no browser, no agent server, no API key, no model calls. Anything
+# needing a real sandbox or a real model stays the manual checklist in docs/TESTING.md.
+test: test-agent test-web
+
+test-agent:
+	cd "$(ROOT)/packages/agent" && uv run --group test pytest -q
+
+test-web:
+	cd "$(ROOT)/packages/web" && pnpm run test
+
+# Browser tests against a FAKE agent — no agent process, no API key, no model calls.
+# Not part of `make test`: it builds the app and drives a browser, so it is minutes
+# rather than seconds.
+test-e2e:
+	cd "$(ROOT)/packages/web" && pnpm run test:e2e

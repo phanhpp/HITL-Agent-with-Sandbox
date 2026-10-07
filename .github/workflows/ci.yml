@@ -12,7 +12,7 @@ on:
 
 jobs:
   web:
-    name: Typecheck the web app
+    name: Typecheck and test the web app
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -40,8 +40,16 @@ jobs:
       # bare `tsc --noEmit` on a fresh checkout fails on types that exist on your laptop.
       - run: pnpm run typecheck
 
+      # Hooks only — no browser, no agent server, no API key.
+      - run: pnpm run test
+
+      # Browser tests. Also no agent and no key: every agent call is intercepted and
+      # answered from fixtures recorded off the real server, so the run is deterministic.
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm run test:e2e
+
   agent:
-    name: Import the graphs
+    name: Import the graphs and test the agent
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -65,3 +73,9 @@ jobs:
       # http_app too: langgraph.json mounts it, but importing only the graphs would let a
       # broken route module — or one missing from [tool.setuptools] packages — ship.
       - run: uv run --no-dev python -c "import agents.human_in_the_loop, agents.orchestrator, http_app"
+
+      # Separate sync: the import check above must stay --no-dev so it proves the
+      # DEPLOYED dependency set is complete. pytest lives in its own group for the same
+      # reason — a test dependency must never be able to satisfy a runtime import.
+      - run: uv sync --group test --frozen
+      - run: uv run --group test pytest -q

@@ -24,10 +24,17 @@ packages/agent/.langgraph_api/
 *.swp
 .idea/
 
-# Personal notes stay local. The four curated docs are tracked anyway, force-added
-# once with `git add -f`:  BUILD.md  LESSONS.md  TESTING.md  deepagent_subagent.md
+# Local Claude Code config and skills -- machine-specific, not part of the app.
+.claude/
+
+# Personal notes stay local. A few curated docs are tracked anyway, force-added once
+# with `git add -f` -- see `git ls-files docs/` for which.
 # `git add docs/` will NOT pick up a new file here -- use -f if you mean to track it.
 docs/
+# Playwright run artifacts (reports, traces, screenshots)
+playwright-report/
+test-results/
+
 # TypeScript build cache
 *.tsbuildinfo
 
