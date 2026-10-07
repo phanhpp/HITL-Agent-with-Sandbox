@@ -55,6 +55,12 @@ Start both: `make dev-next`.
 The browser never talks to the agent server directly. Every call goes through a Next.js
 route handler first.
 
+> **Is any of this load-bearing if you host differently?** The proxy exists for the
+> *secret*, not for the routing — so it is needed wherever one shared key serves every
+> user, and not needed where each user authenticates for themselves. And the agent API
+> comes from LangGraph Server, not from LangSmith: it ships with the backend, which is why
+> `langgraph dev` on a laptop serves the same endpoints as the deployment.
+
 ### What a rewrite is, and why we did not use one
 
 A **rewrite** is a forwarding rule in `next.config.ts`. No code runs — Next matches the

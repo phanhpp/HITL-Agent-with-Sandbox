@@ -37,6 +37,15 @@ next project. Most fail silently, which is why they cost time.
 - Rewrites `tsconfig.json` on first boot (`jsx: "react-jsx"`, adds `.next/dev/types`).
 - Generates `AGENTS.md` telling you to read `node_modules/next/dist/docs/`. Do it — that is how the `params` change was caught.
 
+**Playwright's `webServer` must spawn the server DIRECTLY — no shell chain, no package manager.**
+- Symptom: all tests pass, the summary line never prints, the process never exits. In CI that is a job timeout rather than a red test, so it reads as "slow tests".
+- Playwright kills the process it spawned. Anything that spawns the real server as a *child* leaves it orphaned, and teardown waits on it forever. Two wrappers do this, and fixing only one is not enough:
+  - `next build && next start` — the shell chain. Move the build into the npm script: `"test:e2e": "next build && playwright test"`.
+  - `pnpm exec next start` — the package manager. **This one still hung after the chain was fixed.** Use `node node_modules/next/dist/bin/next start --port <p>`.
+- Diagnose it in one step: run the suite against a server you started yourself. Exits instantly that way and hangs when Playwright owns the server = teardown, not tests.
+
+**`next dev` cannot run twice from one directory**, whatever port you pass — Next 16 refuses outright. So browser tests have to use `next start` against a build, or they break for anyone with the app already running.
+
 **`tsc --noEmit` alone is not a typecheck. Run `next typegen` first.**
 - `RouteContext` and the route-literal types are GENERATED, into `.next/types/`, and reached through `next-env.d.ts`. Neither is in git.
 - So a clean checkout fails with `error TS2304: Cannot find name 'RouteContext'` while your machine passes — your `.next/` is left over from `next dev`.

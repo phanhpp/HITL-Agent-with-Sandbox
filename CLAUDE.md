@@ -4,16 +4,38 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-All run from the repo root (there is no root `package.json`; the Makefile drives everything):
-
 ```bash
-make install        # uv sync in packages/agent (needs uv), pnpm install both frontends
-make dev            # agent (port 2024) + frontend (port 4100) together
-make dev-agent      # LangGraph dev server only, from packages/agent/.venv (a uv project)
-make dev-frontend   # Vite only
+make install        # uv sync in packages/agent, pnpm install the frontends
+make dev-next       # agent (:2024) + Next.js (:4200) together
+make dev-agent      # LangGraph dev server only
+make test           # 78 pytest + 29 vitest, ~2s, no API key
+make test-e2e       # 8 Playwright tests vs a fake agent; builds first
+make typecheck
 ```
 
-Typecheck the frontend with `cd packages/frontend && pnpm exec tsc --noEmit`. It currently fails on a TypeScript 6 deprecation of `baseUrl` in `tsconfig.json`, not on app code. There are no tests or linters.
+**What Make is, and is not.** It is a cross-package convenience layer, used **only
+locally**. It is not a build system and plays no part in either deployment — Vercel builds
+`packages/web`, LangSmith builds `packages/agent`, and neither needs a command that spans
+both.
+
+Only three targets do something you cannot type as easily yourself, and all three span
+both packages: `dev-next` (two servers in parallel), `install`, and `test`. Everything
+else is already a one-liner in the right directory:
+
+```bash
+cd packages/web   && pnpm run test        # same as make test-web
+cd packages/agent && uv run --group test pytest -q
+```
+
+**CI does not use Make**, deliberately. Each job sets `working-directory` to one package,
+so it is already inside the package and has no cross-package problem to solve. A workflow
+that spells out its commands is also easier to debug than one hiding them behind a target.
+
+Dropping the Makefile would cost exactly one thing: starting both dev servers with a
+single command. The rest you would type.
+
+Tests are documented in `docs/TESTING.md` (untracked) — what is automated, what still has
+to be checked by hand, and why.
 
 The agent reads its secrets from `packages/agent/.env` (set by `"env": ".env"` in `langgraph.json`), not from a root `.env`. `ANTHROPIC_API_KEY` is required; `LANGSMITH_API_KEY` is required too once `/orchestrate` delegates to the coder, because the sandbox API authenticates with the same key as LangSmith Deployments.
 
