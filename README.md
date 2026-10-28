@@ -66,7 +66,7 @@ against a fake agent built from recorded traffic. No API key needed.
 | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
 | **Use the live demo**        | Ask me for the password. It exists so the demo cannot be used to run up someone else's bill.                                    |
 | **Run it with your own key** | [Quickstart](#quickstart). Your keys stay in `packages/agent/.env` on your machine and never pass through anyone else's server. |
-| **Just read it**             | [Architecture](#architecture), then `docs/BUILD.md`.                                                                            |
+| **Just read it**             | Start at [Architecture](#architecture).                                                                                         |
 
 
 
@@ -211,19 +211,6 @@ browser ──► Next.js proxy ──► agent server ──► the machine
 when the machine is seeded, so "what did this look like before" is `git show HEAD:<file>`
 and "what changed" is `git diff`. The obvious alternative — remember the files in the
 page — loses everything on reload, and then silently reports that nothing changed.
-
-## Why it holds up
-
-Every behaviour above is server state, not UI state. Approvals are LangGraph interrupts
-answered by id, branches are real checkpoints, a run keeps going on the server while
-nobody is watching, and the diff is a git commit on the sandbox rather than a copy the
-browser is holding — so a reload cannot lose it.
-
-That last one is the rule the rest follows from: anything the page has to *remember* is
-something a reload can take away. The parts that took the most care — resolving several
-pending approvals without ever running an action the user did not click, and keeping
-per-worker streams subscribed only while their card is open — are written up with the
-measurements behind them in `docs/`.
 
 ## Quickstart
 
