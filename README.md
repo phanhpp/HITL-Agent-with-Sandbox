@@ -1,13 +1,63 @@
 # Full-stack agentic chatbot
 
-Two deployed chatbots backed by real LangGraph agents — one that asks permission before
-it acts, one that plans a job and delegates it to a team of subagents.
+**Agents that ask before they act.** Two chatbots on real LangGraph agents: one pauses for
+your approval before every sensitive action, the other plans a job, delegates it to a team of
+subagents, and writes code on its own isolated Linux machine, with you approving each file
+write and shell command.
 
-Streaming, human approval, conversation branching, and rejoining a run after a reload.
-Nothing is mocked: every pause is a real graph interrupt, every branch a real
-checkpoint, every subagent a real nested run on the server.
+**Live demo:** [fullstack-agent-ui.vercel.app](https://fullstack-agent-ui.vercel.app)
+(password-protected, because every message spends model credit; the password is available on
+request, or [run it yourself](#quickstart) with your own key in two minutes).
 
-**Live:** [https://fullstack-agent-ui.vercel.app](https://fullstack-agent-ui.vercel.app)
+![The /approve page: the agent has proposed send_email and stopped. The approval card shows the recipient, subject and body, with Approve, Edit and Reject](media/approve.png)
+
+## Highlights
+
+- **Human-in-the-loop, for real.** Approvals are LangGraph interrupts, not UI state. The agent
+  stops before `send_email`, the card shows exactly what would run, and you **approve, edit
+  the arguments, or reject with a reason**. Close the tab and the card is still waiting.
+- **An approval card per action, correctly resolved.** Several pending actions get several
+  cards; nothing runs until every one is answered, and a decision can never be applied to the
+  wrong action. Covered by unit and browser tests.
+- **An isolated sandbox per conversation.** The `/orchestrate` coder reads, edits and runs
+  commands on its own Linux machine, created per thread and deleted an hour after idle.
+  Nothing is shared between conversations, and every shell command is shown to you first.
+- **A real IDE view of what the agent did.** File tree plus before/after diffs. The baseline
+  is a git commit made when the machine is seeded, so a reload cannot lose it.
+- **Plan, delegate, reason, live.** A Sonnet supervisor writes a todo list and hands topics to
+  Haiku workers. Each subagent is a card you can expand to watch its own tools and thinking
+  stream.
+- **👍 / 👎 on every answer**, stored as LangSmith feedback and kept across branch switches
+  and reloads.
+- **Branch, retry, stop, rejoin.** Edit or retry any message and flip between branches with a
+  `‹ 1/2 ›` switcher. Stop cancels the run on the server, and a reloaded page rejoins the
+  run still in progress.
+- **Safe to leave on the internet.** A password gate in front of the page and again in front
+  of the agent proxy; the browser never sees the agent URL or any API key.
+- **Tested without spending a cent.** 78 pytest, 37 Vitest, and 13 Playwright tests run
+  against a fake agent built from recorded traffic. No API key needed.
+
+## The stack
+
+| Layer | What | Notes |
+| --- | --- | --- |
+| UI | Next.js 16 (App Router), React 19, TypeScript, Tailwind v4 | Vercel |
+| Agent client | `@langchain/react` `useStream`, `@langchain/langgraph-sdk` | Streaming, interrupts, branching |
+| Edge | Route-handler proxy plus password gate (`proxy.ts`) | Adds the LangSmith key server-side; streams unbuffered |
+| Agents | Python 3.12, LangGraph, LangChain `create_agent`, `deepagents` | `HumanInTheLoopMiddleware`, a deep-agent supervisor |
+| Models | Claude Sonnet 5 (supervisor), Claude Haiku 4.5 (workers) | Adaptive extended thinking |
+| Sandbox | LangSmith Sandboxes | One Linux machine per thread, git-backed diffs |
+| Persistence | LangSmith Deployment (managed Postgres and Redis) | Threads, checkpoints and pending approvals live here |
+| Feedback | LangSmith feedback API | Behind custom Starlette routes |
+| Quality | pytest, Vitest, Playwright, GitHub Actions | CI gates both deploys |
+
+## Trying it
+
+| | |
+| --- | --- |
+| **Use the live demo** | Ask me for the password. It exists so the demo cannot be used to run up someone else's bill. |
+| **Run it with your own key** | [Quickstart](#quickstart). Your keys stay in `packages/agent/.env` on your machine and never pass through anyone else's server. |
+| **Just read it** | [Architecture](#architecture), then `docs/BUILD.md`. |
 
 ## Architecture
 
@@ -32,11 +82,60 @@ Anthropic API
 **Next.js does two jobs:** it serves the pages, and it proxies every agent call so the
 API key stays server-side and the browser only ever talks to its own origin.
 
+**How the browser reaches the agent.** The agent server is deployed on LangSmith at a
+public HTTPS URL, but it rejects any request without a LangSmith API key in the
+`X-Api-Key` header. To keep that key out of the browser, the browser only talks to my
+Next.js app on Vercel. A catch-all route handler there, which runs as a serverless
+function, takes any path the browser calls under `/api/langgraph/`, swaps that prefix for the agent's base URL, adds the key from a server-side env var, and forwards the request to the agent URL. It streams the response back unbuffered. The proxy doesn't know what any path means. The LangGraph server decides what each endpoint does. The browser never sees the agent URL or the key.
+
+**Custom endpoints.** `packages/agent/http_app.py` adds our own endpoints (for the
+sandbox and user feedback) alongside the LangGraph agent server's built-in ones. The
+browser reaches them the same way as the built-in ones: through the Next.js route handler
+running as a Vercel serverless function. `langgraph.json` accepts only one extra app, so
+`http_app.py` is a single Starlette app that mounts the two route modules.
+
+```
+browser
+  │  https://your-app.vercel.app/api/langgraph/<anything>
+  ▼                                   (same origin, no key)
+Vercel serverless function: app/api/langgraph/[...path]/route.ts
+  │  strips /api/langgraph, adds X-Api-Key
+  ▼
+LangSmith Deployment: ONE public URL, https://<id>.us.langgraph.app
+┌──────────────────────────────────────────────────────────────────────┐
+│ LangGraph Server (one process, decides by path)                      │
+│                                                                      │
+│  built-in routes                     custom routes                   │
+│  /threads, /runs/stream, ...         /sandbox/{thread}/tree          │
+│       │                              /sandbox/{thread}/file          │
+│       │                              /sandbox/{thread}/changes       │
+│       │                              POST /sandbox/{thread}/baseline │
+│       │                              POST /feedback/{thread}         │
+│       │                              /feedback/{thread}/votes        │
+│       │                                     │                        │
+│       │                          langgraph.json: "http": {"app":     │
+│       │                            "./http_app.py:app"}              │
+│       │                                     │                        │
+│       │                              http_app.py                     │
+│       │                              one Starlette app, mounts:      │
+│       │                                ├─ routes/sandbox_files.py    │
+│       │                                └─ routes/feedback.py         │
+│       ▼                                     │                        │
+│  graphs from langgraph.json                 │                        │
+│   human_in_the_loop, orchestrator           │                        │
+└───────┬─────────────────────────────────────┼────────────────────────┘
+        ▼                                     ▼
+   Anthropic API                 LangSmith sandbox  (tree/file/changes)
+   (+ sandbox for the coder)     LangSmith API      (feedback)
+```
+
 **One agent deployment serves both chats.** LangSmith owns the checkpointer, so threads,  
 branches and pending approvals live in its managed Postgres — which is why a run  
 survives a closed tab.
 
 ## What is built
+
+
 
 ### `/approve` — one agent, one gated tool
 
@@ -60,15 +159,17 @@ A Sonnet supervisor writes a plan, hands topics to Haiku workers, and delegates 
 a subagent with **a real Linux machine**. Every file write and every shell command stops
 for approval, wherever it happens — including inside a worker.
 
-| Capability | What it does |
-|---|---|
-| Plan panel | The agent's live todo list, from `TodoListMiddleware` |
-| Subagent cards | One per delegation, attached to the turn that delegated it; expand to watch that worker's own messages, tools and reasoning stream |
-| Reasoning traces | Extended thinking rendered for the supervisor and every worker |
-| Sandbox | A per-conversation machine. The coder reads, edits and runs commands on it; nothing is shared between conversations |
-| Approval on `execute` | A shell command is shown to you before it runs. Nothing else in the app has a shell to gate |
-| File tree and diffs | The workspace as the agent changes it, with a source-control view of what this run touched |
-| Approval, nested | A worker's `write_file` raises a card on the page and resumes correctly |
+
+| Capability            | What it does                                                                                                                       |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| Plan panel            | The agent's live todo list, from `TodoListMiddleware`                                                                              |
+| Subagent cards        | One per delegation, attached to the turn that delegated it; expand to watch that worker's own messages, tools and reasoning stream |
+| Reasoning traces      | Extended thinking rendered for the supervisor and every worker                                                                     |
+| Sandbox               | A per-conversation machine. The coder reads, edits and runs commands on it; nothing is shared between conversations                |
+| Approval on `execute` | A shell command is shown to you before it runs. Nothing else in the app has a shell to gate                                        |
+| File tree and diffs   | The workspace as the agent changes it, with a source-control view of what this run touched                                         |
+| Approval, nested      | A worker's `write_file` raises a card on the page and resumes correctly                                                            |
+
 
 The page is a two-column chat until a conversation needs code, then becomes a
 three-column IDE — a code pane that sits empty takes the width the conversation needs.
@@ -115,15 +216,15 @@ measurements behind them in `docs/`.
 ## Stack
 
 
-|           |                                                                             |
-| --------- | --------------------------------------------------------------------------- |
-| Frontend  | Next.js 16 (App Router), React 19, TypeScript 5.9, Tailwind v4              |
-| Agent SDK | `@langchain/react` `useStream` + selector hooks, `@langchain/langgraph-sdk` |
-| Agents    | Python 3.12, LangGraph, LangChain, `deepagents` 0.7                         |
-| Models    | Claude Sonnet 5 (supervisor, adaptive thinking), Claude Haiku 4.5 (workers) |
+|           |                                                                                          |
+| --------- | ---------------------------------------------------------------------------------------- |
+| Frontend  | Next.js 16 (App Router), React 19, TypeScript 5.9, Tailwind v4                           |
+| Agent SDK | `@langchain/react` `useStream` + selector hooks, `@langchain/langgraph-sdk`              |
+| Agents    | Python 3.12, LangGraph, LangChain, `deepagents` 0.7                                      |
+| Models    | Claude Sonnet 5 (supervisor, adaptive thinking), Claude Haiku 4.5 (workers)              |
 | Sandbox   | LangSmith Sandboxes — one Linux machine per conversation, 10 min idle / 1 hour to delete |
-| Hosting   | Vercel (web) + LangSmith Deployment (agent), both redeploy on push          |
-| Tooling   | uv (Python), pnpm, Make                                                     |
+| Hosting   | Vercel (web) + LangSmith Deployment (agent), both redeploy on push                       |
+| Tooling   | uv (Python), pnpm, Make                                                                  |
 
 
 
@@ -141,6 +242,9 @@ make dev-next                           # agent :2024 + Next.js :4200
 ```
 
 Open [http://localhost:4200](http://localhost:4200).
+
+Locally the app is open: no `WEB_PASSWORD`, no login. On a deploy, set `WEB_PASSWORD` in
+Vercel; a production build with none refuses everyone rather than serving the app open.
 
 `packages/web/.env.local` is optional locally — `AGENT_SERVER_URL` defaults are in
 `.env.local.example`, and `langgraph dev` needs no API key.
