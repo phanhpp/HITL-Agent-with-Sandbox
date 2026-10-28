@@ -891,7 +891,7 @@ shell owns `threadId` while the child owns `useStream`, New conversation clears 
 they use `sessionStorage`; and we keep Leave inside the chat rather than using their
 `onControlsChange` effect to hoist controls into the header.
 
-Reference: `/Users/dangphuonganh/dev/join-rejoin/packages/frontend/src/patterns/join-rejoin/preview.tsx`
+Reference: `packages/frontend/src/patterns/join-rejoin/preview.tsx` in the earlier join-rejoin project.
 
 ---
 
