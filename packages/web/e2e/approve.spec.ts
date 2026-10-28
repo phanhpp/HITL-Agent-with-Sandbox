@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 
+import { signIn } from "./sign-in";
 import { decisionsSent, EMAIL_A, EMAIL_B, mockAgent } from "./mock-agent";
 
 /*
@@ -10,6 +11,10 @@ import { decisionsSent, EMAIL_A, EMAIL_B, mockAgent } from "./mock-agent";
  * built from server state rather than anything the page is holding, and that the exact
  * JSON leaving the browser is correct.
  */
+
+test.beforeEach(async ({ page }) => {
+  await signIn(page);
+});
 
 test.describe("a conversation paused on one approval", () => {
   test("renders the pending action from server state alone", async ({ page }) => {

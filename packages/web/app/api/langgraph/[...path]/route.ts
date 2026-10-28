@@ -1,5 +1,7 @@
 import type { NextRequest } from "next/server";
 
+import { AUTH_COOKIE, mayEnter } from "@/lib/auth";
+
 // Proxy between the browser and the LangGraph agent server.
 // A next.config rewrite cannot add the X-Api-Key a hosted agent needs, which is why
 // this is a route handler. Full reasoning in docs/BUILD.md section 2.
@@ -33,6 +35,15 @@ const FORWARDED_RESPONSE_HEADERS = ["content-type", "content-disposition", "etag
 // ============================================================================
 
 async function proxy(req: NextRequest, ctx: RouteContext<"/api/langgraph/[...path]">) {
+  // --------------------------------------------------------------------------
+  // STEP 0: Check the password cookie again
+  // --------------------------------------------------------------------------
+  // proxy.ts already gates this path, but Next calls that check optimistic. This is the
+  // one that stands between a stranger and the LangSmith key added in step 3.
+  if (!(await mayEnter(req.cookies.get(AUTH_COOKIE)?.value))) {
+    return Response.json({ error: "Not signed in." }, { status: 401 });
+  }
+
   // --------------------------------------------------------------------------
   // STEP 1: Validate the Target Server URL
   // --------------------------------------------------------------------------

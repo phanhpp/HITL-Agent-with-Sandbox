@@ -45,6 +45,6 @@ export default defineConfig({
     reuseExistingServer: !process.env.CI,
     timeout: 300_000,
     // The proxy refuses to start without this. The mock means it is never reached.
-    env: { AGENT_SERVER_URL: "http://127.0.0.1:9/unused" },
+    env: { AGENT_SERVER_URL: "http://127.0.0.1:9/unused", WEB_PASSWORD: "e2e-password" },
   },
 });

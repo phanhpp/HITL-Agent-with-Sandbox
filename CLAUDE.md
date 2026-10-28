@@ -8,8 +8,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 make install        # uv sync in packages/agent, pnpm install the frontends
 make dev-next       # agent (:2024) + Next.js (:4200) together
 make dev-agent      # LangGraph dev server only
-make test           # 78 pytest + 29 vitest, ~2s, no API key
-make test-e2e       # 8 Playwright tests vs a fake agent; builds first
+make test           # 78 pytest + 37 vitest, ~2s, no API key
+make test-e2e       # 13 Playwright tests vs a fake agent; builds first
 make typecheck
 ```
 
@@ -69,6 +69,7 @@ The app under active development. Run it with `make dev-next` (agent :2024 + Nex
 
 `docs/BUILD.md` is a walkthrough of how it works, section by section, in `GUIDE.md`'s style. Read it before changing the chat surface — most of what looks arbitrary there is load-bearing.
 
+- **Password gate.** `proxy.ts` + `lib/auth.ts` + `app/login` + `app/api/login`. `WEB_PASSWORD` set: everything needs the cookie. Unset: open in development, **closed in production** (fail closed). The agent proxy route re-checks the cookie before it attaches the LangSmith key, because Next calls `proxy.ts` an optimistic check. Playwright's API client will not send the `Secure` cookie over http; assert through `page.evaluate(fetch)` instead.
 - `app/api/langgraph/[...path]/route.ts` proxies every agent call and injects `X-Api-Key` from `AGENT_SERVER_URL`/`LANGSMITH_API_KEY`. A `next.config` rewrite cannot add headers, which is why this is a route handler. The key is only set when present, so `langgraph dev` works locally with no key.
 - **Height chain.** `body` is `h-dvh flex flex-col`, `main` is `flex-1 min-h-0 flex flex-col`, and pages pass `embedded` to `ChatContainer`. `main` must stay a flex container: `flex-1` means nothing to a child of a block element, and the symptom is silent — the chat grows past the viewport and nothing scrolls.
 - **Thread ids must be persisted.** `components/ChatShell.tsx` owns this; pages receive `threadId` as a prop. A run continues server-side after you navigate away, so dropping the id discards a live conversation. It reads `localStorage` in a **synchronous `useState` initializer**, which is safe only because the page is loaded through `dynamic(..., { ssr: false })` — see `features/*/\*Client.tsx`. (An older note here described an effect-based `usePersistedThreadId` hook; that file does not exist and the rule is the opposite.)
