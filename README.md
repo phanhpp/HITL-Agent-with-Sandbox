@@ -1,6 +1,6 @@
-# Full-stack agentic chatbot
+# HITL Agent with Sandbox
 
-**Agents that ask before they act.** Two chatbots on real LangGraph agents: one pauses for
+**Human-in-the-loop agents that ask before they act.** Two chatbots on real LangGraph agents: one pauses for
 your approval before every sensitive action, the other plans a job, delegates it to a team of
 subagents, and writes code on its own isolated Linux machine, with you approving each file
 write and shell command.

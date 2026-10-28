@@ -34,7 +34,7 @@ export default function LoginPage() {
         className="w-full max-w-sm space-y-4 rounded-xl border border-border bg-surface p-6 shadow-sm"
       >
         <div>
-          <h1 className="text-lg font-semibold">Full-stack agentic chatbot</h1>
+          <h1 className="text-lg font-semibold">HITL Agent with Sandbox</h1>
           <p className="mt-1 text-sm text-text-secondary">
             Every message here spends the owner&apos;s model credit, so the demo is
             password-protected. Ask for the password, or clone the repo and run it with your own key.

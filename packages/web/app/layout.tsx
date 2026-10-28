@@ -15,8 +15,8 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "Full-stack agentic chatbot",
-  description: "Human-in-the-loop, orchestration, and time travel over LangGraph.",
+  title: "HITL Agent with Sandbox",
+  description: "Human-in-the-loop agents with an isolated sandbox, on LangGraph.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

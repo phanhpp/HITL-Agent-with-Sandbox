@@ -22,7 +22,7 @@ export default function Home() {
     <div className="h-full overflow-y-auto">
       <div className="max-w-5xl mx-auto px-4 py-12 sm:py-16">
         <h1 className="text-3xl sm:text-4xl font-bold text-text text-balance">
-          Full-stack agentic chatbot
+          HITL Agent with Sandbox
         </h1>
         <p className="mt-3 text-text-secondary max-w-2xl">
           Two chatbots over real LangGraph agents. Streaming, interrupts and

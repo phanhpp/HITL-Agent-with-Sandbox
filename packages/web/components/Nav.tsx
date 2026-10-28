@@ -17,7 +17,7 @@ export function Nav() {
     <nav className="shrink-0 border-b border-border bg-surface">
       <div className="flex items-center gap-6 px-4 h-14">
         <Link href="/" className="font-semibold text-text hover:text-primary transition-colors">
-          agent-ui
+          HITL Agent
         </Link>
         <div className="flex items-center gap-1">
           {LINKS.map(({ href, label }) => {
