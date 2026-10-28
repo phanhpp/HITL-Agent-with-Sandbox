@@ -2,6 +2,8 @@
 
 import { Fragment, useCallback, useState, type ReactNode } from "react";
 
+import { clearThreadId, readThreadId, saveThreadId } from "@/lib/thread-storage";
+
 /**
  * GUIDE.md 8.3's ChatShell, shared by every page.
  *
@@ -49,7 +51,7 @@ export default function ChatShell({
 }) {
   const [threadId, setThreadId] = useState<string | null>(() => {
     try {
-      return localStorage.getItem(storageKey);
+      return readThreadId(localStorage, storageKey);
     } catch {
       // Private mode or blocked storage: start fresh rather than crash.
       return null;
@@ -71,8 +73,8 @@ export default function ChatShell({
       // flight along with everything it had streamed.
       if (id === null) setMountKey((k) => k + 1);
       try {
-        if (id) localStorage.setItem(storageKey, id);
-        else localStorage.removeItem(storageKey);
+        if (id) saveThreadId(localStorage, storageKey, id);
+        else clearThreadId(localStorage, storageKey);
       } catch {
         // The id still works for this page view.
       }

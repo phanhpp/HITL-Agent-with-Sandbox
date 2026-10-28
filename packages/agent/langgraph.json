@@ -10,5 +10,12 @@
   },
   "http": {
     "app": "./http_app.py:app"
+  },
+  "checkpointer": {
+    "ttl": {
+      "strategy": "delete",
+      "default_ttl": 1440,
+      "sweep_interval_minutes": 10
+    }
   }
 }
